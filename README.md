@@ -13,7 +13,7 @@ The frontend talks to the backend over HTTP. Both can run on different hosts bec
 
 ## Live demo
 
-Hosted on GitHub Pages: **https://kj564.github.io/TorentStream/**
+Hosted on GitHub Pages: **https://kj564.github.io/TorrentStream/**
 
 The static frontend loads. To actually stream torrents, you need to run the Go backend yourself (see below) and point the frontend at it via the settings icon in the header.
 
@@ -46,7 +46,7 @@ Open http://localhost:3000. The frontend uses the gateway pattern (`?XTransformP
 
 The repo includes a GitHub Action (`.github/workflows/deploy.yml`) that auto-deploys on push to `main`:
 
-1. Builds the Next.js static export with `GITHUB_PAGES=true` (sets `basePath: /TorentStream`).
+1. Builds the Next.js static export with `GITHUB_PAGES=true` (sets `basePath: /TorrentStream`).
 2. Uploads the `out/` directory as a Pages artifact.
 3. Deploys to GitHub Pages.
 
