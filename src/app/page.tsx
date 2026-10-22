@@ -26,6 +26,7 @@ import {
   Moon,
   ChevronDown,
   ChevronRight,
+  Settings,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -92,7 +93,42 @@ interface Torrent {
 }
 
 // ============ Constants ============
-const TORRENT_PORT = 3003
+// Default port used when no backend URL is configured (sandbox dev gateway).
+const DEFAULT_TORRENT_PORT = 3003
+
+// Backend URL resolution (checked in this order):
+// 1. localStorage 'torrentApiUrl' (set via settings UI - runtime configurable)
+// 2. NEXT_PUBLIC_TORRENT_API_URL env var (set at build time)
+// 3. Fallback to gateway pattern (?XTransformPort=<port>) for sandbox dev
+//
+// Reason for localStorage: GitHub Pages serves a static build with no backend.
+// The user runs the Go service wherever they want and pastes the URL into the
+// settings panel. The frontend then calls that URL directly (CORS-allowed by
+// the Go service's cors.AllowOrigins: ["*"]).
+function getApiBase(): { baseUrl: string; useGateway: boolean } {
+  if (typeof window !== 'undefined') {
+    const stored = window.localStorage.getItem('torrentApiUrl')
+    if (stored && stored.trim()) {
+      return { baseUrl: stored.trim().replace(/\/$/, ''), useGateway: false }
+    }
+  }
+  const env = process.env.NEXT_PUBLIC_TORRENT_API_URL
+  if (env && env.trim()) {
+    return { baseUrl: env.trim().replace(/\/$/, ''), useGateway: false }
+  }
+  return { baseUrl: '', useGateway: true }
+}
+
+// Build a full API URL from a path. Uses gateway pattern in sandbox dev,
+// or calls the backend directly when a URL is configured.
+function buildApiUrl(path: string): string {
+  const { baseUrl, useGateway } = getApiBase()
+  if (useGateway) {
+    const sep = path.includes('?') ? '&' : '?'
+    return `${path}${sep}XTransformPort=${DEFAULT_TORRENT_PORT}`
+  }
+  return `${baseUrl}${path}`
+}
 
 // Sample torrents (free / public domain Blender open movies).
 // Reason these are here: they are real, working torrents that let a new
@@ -147,8 +183,7 @@ function fileLetter(f: TorrentFile): string {
 
 // ============ API helpers ============
 async function apiCall(path: string, opts: RequestInit = {}) {
-  const sep = path.includes('?') ? '&' : '?'
-  const url = `${path}${sep}XTransformPort=${TORRENT_PORT}`
+  const url = buildApiUrl(path)
   const res = await fetch(url, opts)
   if (!res.ok) {
     let msg = `HTTP ${res.status}`
@@ -204,6 +239,119 @@ function ThemeToggle() {
     >
       {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
     </button>
+  )
+}
+
+// ============ Settings (backend URL configuration) ============
+// Lets the user point the frontend at their own Go backend, so the static
+// GitHub Pages build can talk to a torrent service running anywhere.
+// Stored in localStorage 'torrentApiUrl'. Reload applies the new URL.
+function SettingsToggle() {
+  const [open, setOpen] = useState(false)
+  const [url, setUrl] = useState('')
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => setMounted(true), [])
+
+  useEffect(() => {
+    if (open && mounted) {
+      setUrl(window.localStorage.getItem('torrentApiUrl') || '')
+    }
+  }, [open, mounted])
+
+  // Close on Escape.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  if (!mounted) {
+    return <div className="h-11 w-11 sm:h-7 sm:w-7" aria-hidden />
+  }
+
+  const save = () => {
+    const trimmed = url.trim().replace(/\/$/, '')
+    if (trimmed) {
+      window.localStorage.setItem('torrentApiUrl', trimmed)
+    } else {
+      window.localStorage.removeItem('torrentApiUrl')
+    }
+    setOpen(false)
+    // Reload so TanStack Query refetches against the new base URL.
+    window.location.reload()
+  }
+
+  const reset = () => {
+    window.localStorage.removeItem('torrentApiUrl')
+    setUrl('')
+    setOpen(false)
+    window.location.reload()
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="inline-flex h-11 w-11 sm:h-7 sm:w-7 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+        aria-label="Backend settings"
+        title="Backend settings"
+        aria-expanded={open}
+      >
+        <Settings className="h-3.5 w-3.5" />
+      </button>
+      {open && (
+        <>
+          {/* Click-away backdrop */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          <div
+            className="absolute right-0 top-full mt-2 z-50 w-72 bg-popover border border-border rounded-md shadow-lg p-3 space-y-2"
+            role="dialog"
+            aria-label="Backend URL settings"
+          >
+            <label className="block text-[11px] text-muted-foreground" htmlFor="backend-url">
+              Backend URL
+            </label>
+            <Input
+              id="backend-url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') save() }}
+              placeholder="http://localhost:3003"
+              className="h-9 font-mono text-xs bg-background border-border"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <p className="text-[10px] text-muted-foreground leading-relaxed">
+              Where your Go torrent service runs. Leave empty for sandbox dev.
+              The Go service must allow CORS (it does by default).
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button
+                size="sm"
+                onClick={save}
+                className="h-8 flex-1 bg-amber-500 hover:bg-amber-600 text-amber-950"
+              >
+                Save
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={reset}
+                className="h-8 border-border"
+              >
+                Reset
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 
@@ -341,7 +489,7 @@ export default function Home() {
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold tracking-tight">TorrentStream</span>
-            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">port {TORRENT_PORT}</span>
+            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">port {DEFAULT_TORRENT_PORT}</span>
           </div>
           <div className="flex items-center gap-3">
             <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -351,6 +499,7 @@ export default function Home() {
             <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">
               {torrents?.length ?? 0} active
             </span>
+            <SettingsToggle />
             <ThemeToggle />
           </div>
         </div>
@@ -445,7 +594,7 @@ export default function Home() {
               <AlertTriangle className="h-5 w-5 text-red-500" />
               <p className="text-sm font-medium">Cannot reach torrent service</p>
               <p className="text-[11px] text-muted-foreground">
-                Check that the Go backend on port {TORRENT_PORT} is running.
+                Check that the Go backend is reachable. If you are on GitHub Pages, click the settings icon in the header and enter your backend URL (e.g. http://localhost:3003).
               </p>
               <Button
                 variant="outline"
@@ -484,7 +633,7 @@ export default function Home() {
           One line. Honest statement of what's running, no marketing copy. */}
       <footer className="hairline mt-auto">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-10 flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>Backend: Go + anacrolix/torrent on port {TORRENT_PORT}</span>
+          <span>Backend: Go + anacrolix/torrent</span>
           <span className="tabular hidden sm:inline">
             {torrents?.length ?? 0} torrents
           </span>
@@ -706,7 +855,7 @@ function FileRow({
   onStream: () => void
   torrentId: string
 }) {
-  const downloadUrl = `/api/torrents/${torrentId}/download/${file.index}?XTransformPort=${TORRENT_PORT}`
+  const downloadUrl = buildApiUrl(`/api/torrents/${torrentId}/download/${file.index}`)
 
   return (
     <div className="flex items-center gap-3 py-1.5 px-1 hover:bg-muted/40 transition-colors group">
@@ -902,7 +1051,7 @@ function VideoPlayerModal({
   onClose: () => void
 }) {
   const { file, torrentId, torrentName } = data
-  const streamUrl = `/api/torrents/${torrentId}/stream/${file.index}?XTransformPort=${TORRENT_PORT}`
+  const streamUrl = buildApiUrl(`/api/torrents/${torrentId}/stream/${file.index}`)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
@@ -1024,7 +1173,7 @@ function VideoPlayerModal({
           <span className="font-mono tabular">
             {file.ext.toUpperCase()} · {formatBytes(file.length)}
           </span>
-          <a href={`/api/torrents/${torrentId}/download/${file.index}?XTransformPort=${TORRENT_PORT}`} download={file.name}>
+          <a href={buildApiUrl(`/api/torrents/${torrentId}/download/${file.index}`)} download={file.name}>
             <Button variant="outline" size="sm" className="h-7 border-border">
               <Download className="h-3 w-3 mr-1.5" /> Download
             </Button>

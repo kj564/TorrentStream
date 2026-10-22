@@ -30,12 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
+!.env.example
 
 # vercel
 .vercel
-
 
 # typescript
 *.tsbuildinfo
@@ -46,9 +46,26 @@ local-*
 *.log
 dev.log
 dev.out.log
+server.log
+torrent-service.log
 test
 prompt
 
-server.log
-# Skills directory
+# Project-specific
+# Downloaded torrent data
+/download/
+# SQLite database (runtime state)
+/db/
+# Uploaded files
+/upload/
+
+# Z.ai sandbox environment (not part of the project)
 /skills/
+/examples/
+/tests/
+/.zscripts/
+/Caddyfile
+
+# Go build artifacts
+mini-services/torrent-service/tmp/
+worklog.md
