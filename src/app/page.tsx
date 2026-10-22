@@ -1,16 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
-// Plyr CSS is safe to import at module level (CSS only, no JS).
-import 'plyr/dist/plyr.css'
-// Type-only import: erased at compile time, does not trigger module evaluation
-// so it does not break SSR. The runtime Plyr is loaded via dynamic import()
-// inside the PlyrPlayer useEffect.
-import type Plyr from 'plyr'
-// Plyr JS is imported dynamically inside useEffect because its source
-// references `document` at module evaluation, which breaks Next.js SSR.
 import {
   Play,
   Pause,
@@ -26,8 +17,9 @@ import {
   Moon,
   ChevronDown,
   ChevronRight,
-  Settings,
 } from 'lucide-react'
+import 'plyr/dist/plyr.css'
+import type Plyr from 'plyr'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
@@ -46,6 +38,17 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
+import {
+  useTorrentClient,
+  type Torrent,
+  type TorrentFile,
+  getExt,
+  isVideo,
+  isAudio,
+  isImage,
+  isSubtitle,
+  isStreamable,
+} from '@/components/torrent-client'
 
 /* ============================================================
  * DESIGN.md reference
@@ -53,102 +56,39 @@ import { cn } from '@/lib/utils'
  * Palette: warm stone neutrals + single amber accent (R-29).
  * Typography: Geist Sans for prose, Geist Mono for all data (R-06 reason:
  * tabular alignment is functional, signals "machine output").
- * Dials: ENERGY 1 / RHYTHM 2 / MOTION 1 (see DESIGN.md Liveliness Toolkit).
+ * Dials: ENERGY 1 / RHYTHM 2 / MOTION 1.
+ *
+ * Architecture change: the UI is now 100% client-side. WebTorrent
+ * (https://github.com/webtorrent/webtorrent) runs in the browser via
+ * WebRTC. No Go backend, no server, works on GitHub Pages.
  * ============================================================ */
 
-// ============ Types (matches Go backend JSON shape) ============
-interface TorrentFile {
-  index: number
-  name: string
-  length: number
-  downloaded: number
-  progress: number
-  path: string
-  done: boolean
-  streamable: boolean
-  isVideo: boolean
-  isAudio: boolean
-  isImage: boolean
-  isSubtitle: boolean
-  ext: string
-}
-
-interface Torrent {
-  id: string
-  infoHash: string
-  magnetURI: string
-  name: string
-  progress: number
-  downloaded: number
-  uploaded: number
-  downloadSpeed: number
-  uploadSpeed: number
-  numPeers: number
-  ready: boolean
-  paused: boolean
-  length: number
-  createdAt: number
-  error?: string
-  files: TorrentFile[]
-}
-
 // ============ Constants ============
-// Default port used when no backend URL is configured (sandbox dev gateway).
-const DEFAULT_TORRENT_PORT = 3003
-
-// Backend URL resolution (checked in this order):
-// 1. localStorage 'torrentApiUrl' (set via settings UI - runtime configurable)
-// 2. NEXT_PUBLIC_TORRENT_API_URL env var (set at build time)
-// 3. Fallback to gateway pattern (?XTransformPort=<port>) for sandbox dev
-//
-// Reason for localStorage: GitHub Pages serves a static build with no backend.
-// The user runs the Go service wherever they want and pastes the URL into the
-// settings panel. The frontend then calls that URL directly (CORS-allowed by
-// the Go service's cors.AllowOrigins: ["*"]).
-function getApiBase(): { baseUrl: string; useGateway: boolean } {
-  if (typeof window !== 'undefined') {
-    const stored = window.localStorage.getItem('torrentApiUrl')
-    if (stored && stored.trim()) {
-      return { baseUrl: stored.trim().replace(/\/$/, ''), useGateway: false }
-    }
-  }
-  const env = process.env.NEXT_PUBLIC_TORRENT_API_URL
-  if (env && env.trim()) {
-    return { baseUrl: env.trim().replace(/\/$/, ''), useGateway: false }
-  }
-  return { baseUrl: '', useGateway: true }
-}
-
-// Build a full API URL from a path. Uses gateway pattern in sandbox dev,
-// or calls the backend directly when a URL is configured.
-function buildApiUrl(path: string): string {
-  const { baseUrl, useGateway } = getApiBase()
-  if (useGateway) {
-    const sep = path.includes('?') ? '&' : '?'
-    return `${path}${sep}XTransformPort=${DEFAULT_TORRENT_PORT}`
-  }
-  return `${baseUrl}${path}`
-}
 
 // Sample torrents (free / public domain Blender open movies).
-// Reason these are here: they are real, working torrents that let a new
-// user verify the system end-to-end without hunting for a magnet link.
+// These have wss:// WebTorrent trackers so they work peer-to-peer in the
+// browser. For arbitrary magnets without wss:// trackers, we auto-append
+// public WebTorrent trackers in torrent-client.tsx.
 const SAMPLE_TORRENTS: { name: string; magnet: string }[] = [
   {
     name: 'Sintel',
-    magnet: 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d811df5ee1ae3579e3da&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
+    magnet:
+      'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d811df5ee1ae3579e3da&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com',
   },
   {
     name: 'Big Buck Bunny',
-    magnet: 'magnet:?xt=urn:btih:dd8255ecdc7ca1fb9914cc6a2783a1522b9eee7a&dn=BigBuckBunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
+    magnet:
+      'magnet:?xt=urn:btih:dd8255ecdc7ca1fb9914cc6a2783a1522b9eee7a&dn=BigBuckBunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com',
   },
   {
     name: 'Tears of Steel',
-    magnet: 'magnet:?xt=urn:btih:209c8a6f6f5e8f3a0cb5f1d5f2f1d0b5e1f3a3cb&dn=TearsOfSteel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
+    magnet:
+      'magnet:?xt=urn:btih:209c8a6f6f5e8f3a0cb5f1d5f2f1d0b5e1f3a3cb&dn=TearsOfSteel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969',
   },
 ]
 
 // ============ Utility ============
+
 function formatBytes(bytes: number, decimals = 2): string {
   if (!bytes || bytes <= 0) return '0 B'
   const k = 1024
@@ -172,49 +112,12 @@ function formatEta(ms: number): string {
 }
 
 // Letter mark for file types. Replaces Lucide icons (R-04: avoid library look).
-// Reason: tabular letter marks read as data classification, not decoration.
 function fileLetter(f: TorrentFile): string {
   if (f.isVideo) return 'V'
   if (f.isAudio) return 'A'
   if (f.isImage) return 'I'
   if (f.isSubtitle) return 'S'
   return 'T'
-}
-
-// ============ API helpers ============
-async function apiCall(path: string, opts: RequestInit = {}) {
-  const url = buildApiUrl(path)
-  const res = await fetch(url, opts)
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try { const e = await res.json(); msg = e.error || msg } catch {}
-    throw new Error(msg)
-  }
-  return res
-}
-
-// ============ Hooks ============
-function useTorrents() {
-  return useQuery<Torrent[]>({
-    queryKey: ['torrents'],
-    queryFn: async () => {
-      const res = await apiCall('/api/torrents')
-      return res.json()
-    },
-    refetchInterval: 1500,
-    staleTime: 0,
-  })
-}
-
-function useServiceHealth() {
-  return useQuery<{ ok: boolean; port: string; torrents: number }>({
-    queryKey: ['health'],
-    queryFn: async () => {
-      const res = await apiCall('/api/health')
-      return res.json()
-    },
-    refetchInterval: 10000,
-  })
 }
 
 // ============ Theme toggle (R-21: working light/dark) ============
@@ -224,8 +127,6 @@ function ThemeToggle() {
   useEffect(() => setMounted(true), [])
 
   if (!mounted) {
-    // Placeholder to avoid hydration mismatch (next-themes sets class on <html>
-    // at load time; we can't know it on the server).
     return <div className="h-11 w-11 sm:h-7 sm:w-7" aria-hidden />
   }
 
@@ -239,119 +140,6 @@ function ThemeToggle() {
     >
       {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
     </button>
-  )
-}
-
-// ============ Settings (backend URL configuration) ============
-// Lets the user point the frontend at their own Go backend, so the static
-// GitHub Pages build can talk to a torrent service running anywhere.
-// Stored in localStorage 'torrentApiUrl'. Reload applies the new URL.
-function SettingsToggle() {
-  const [open, setOpen] = useState(false)
-  const [url, setUrl] = useState('')
-  const [mounted, setMounted] = useState(false)
-
-  useEffect(() => setMounted(true), [])
-
-  useEffect(() => {
-    if (open && mounted) {
-      setUrl(window.localStorage.getItem('torrentApiUrl') || '')
-    }
-  }, [open, mounted])
-
-  // Close on Escape.
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open])
-
-  if (!mounted) {
-    return <div className="h-11 w-11 sm:h-7 sm:w-7" aria-hidden />
-  }
-
-  const save = () => {
-    const trimmed = url.trim().replace(/\/$/, '')
-    if (trimmed) {
-      window.localStorage.setItem('torrentApiUrl', trimmed)
-    } else {
-      window.localStorage.removeItem('torrentApiUrl')
-    }
-    setOpen(false)
-    // Reload so TanStack Query refetches against the new base URL.
-    window.location.reload()
-  }
-
-  const reset = () => {
-    window.localStorage.removeItem('torrentApiUrl')
-    setUrl('')
-    setOpen(false)
-    window.location.reload()
-  }
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="inline-flex h-11 w-11 sm:h-7 sm:w-7 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
-        aria-label="Backend settings"
-        title="Backend settings"
-        aria-expanded={open}
-      >
-        <Settings className="h-3.5 w-3.5" />
-      </button>
-      {open && (
-        <>
-          {/* Click-away backdrop */}
-          <div
-            className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
-            aria-hidden
-          />
-          <div
-            className="absolute right-0 top-full mt-2 z-50 w-72 bg-popover border border-border rounded-md shadow-lg p-3 space-y-2"
-            role="dialog"
-            aria-label="Backend URL settings"
-          >
-            <label className="block text-[11px] text-muted-foreground" htmlFor="backend-url">
-              Backend URL
-            </label>
-            <Input
-              id="backend-url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') save() }}
-              placeholder="http://localhost:3003"
-              className="h-9 font-mono text-xs bg-background border-border"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <p className="text-[10px] text-muted-foreground leading-relaxed">
-              Where your Go torrent service runs. Leave empty for sandbox dev.
-              The Go service must allow CORS (it does by default).
-            </p>
-            <div className="flex gap-2 pt-1">
-              <Button
-                size="sm"
-                onClick={save}
-                className="h-8 flex-1 bg-amber-500 hover:bg-amber-600 text-amber-950"
-              >
-                Save
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={reset}
-                className="h-8 border-border"
-              >
-                Reset
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
   )
 }
 
@@ -369,7 +157,7 @@ function StatusDot({
     active: 'bg-amber-500',
     paused: 'bg-muted-foreground/60',
     error: 'bg-red-500',
-    done: 'bg-emerald-500', // emerald appears ONLY as data (complete state), never as chrome
+    done: 'bg-emerald-500',
   }
   const pulse = state === 'online' || state === 'active'
   return (
@@ -383,52 +171,9 @@ function StatusDot({
 // ============ Main Page ============
 export default function Home() {
   const { toast } = useToast()
-  const queryClient = useQueryClient()
-  const { data: torrents, isLoading, isError: listError } = useTorrents()
-  const { data: health } = useServiceHealth()
+  const { torrents, ready: clientReady, addTorrent, removeTorrent, pauseTorrent, resumeTorrent } = useTorrentClient()
   const [magnetInput, setMagnetInput] = useState('')
-  const [streamingFile, setStreamingFile] = useState<{ torrentId: string; file: TorrentFile; torrentName: string } | null>(null)
-
-  const addMagnet = useMutation({
-    mutationFn: async (magnet: string) => {
-      const res = await apiCall('/api/torrents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ magnet })
-      })
-      return res.json()
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: data.existing ? 'Already in list' : 'Torrent added' })
-      setMagnetInput('')
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to add torrent', description: err.message, variant: 'destructive' })
-    }
-  })
-
-  const uploadFile = useMutation({
-    mutationFn: async (file: File) => {
-      const fd = new FormData()
-      fd.append('torrent', file)
-      const res = await apiCall('/api/torrents', { method: 'POST', body: fd })
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: 'Torrent file added' })
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Upload failed', description: err.message, variant: 'destructive' })
-    }
-  })
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    if (f) uploadFile.mutate(f)
-    e.target.value = ''
-  }
+  const [streamingFile, setStreamingFile] = useState<{ wtFile: any; file: TorrentFile; torrentName: string } | null>(null)
 
   const handleAddMagnet = useCallback(() => {
     const m = magnetInput.trim()
@@ -440,8 +185,44 @@ export default function Home() {
       toast({ title: 'Not a magnet link', description: 'A magnet link starts with "magnet:".', variant: 'destructive' })
       return
     }
-    addMagnet.mutate(m)
-  }, [magnetInput, addMagnet, toast])
+    if (!clientReady) {
+      toast({ title: 'WebTorrent not ready', description: 'The client is still initializing. Try again in a moment.', variant: 'destructive' })
+      return
+    }
+    const id = addTorrent(m)
+    if (id) {
+      toast({ title: 'Torrent added' })
+      setMagnetInput('')
+    } else {
+      toast({ title: 'Failed to add', description: 'Could not parse the magnet link.', variant: 'destructive' })
+    }
+  }, [magnetInput, clientReady, addTorrent, toast])
+
+  const handleFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const f = e.target.files?.[0]
+      if (!f || !clientReady) {
+        if (!clientReady) {
+          toast({ title: 'WebTorrent not ready', variant: 'destructive' })
+        }
+        e.target.value = ''
+        return
+      }
+      try {
+        const buf = new Uint8Array(await f.arrayBuffer())
+        const id = addTorrent(buf, f.name.replace(/\.torrent$/i, ''))
+        if (id) {
+          toast({ title: 'Torrent file added' })
+        } else {
+          toast({ title: 'Invalid .torrent file', variant: 'destructive' })
+        }
+      } catch (err: any) {
+        toast({ title: 'Upload failed', description: err.message, variant: 'destructive' })
+      }
+      e.target.value = ''
+    },
+    [clientReady, addTorrent, toast]
+  )
 
   const handlePasteFromClipboard = async () => {
     try {
@@ -457,49 +238,55 @@ export default function Home() {
     }
   }
 
-  const handlePauseResume = async (t: Torrent) => {
-    try {
-      await apiCall(`/api/torrents/${t.id}/${t.paused ? 'resume' : 'pause'}`, { method: 'POST' })
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-    } catch (e: any) {
-      toast({ title: 'Action failed', description: e.message, variant: 'destructive' })
-    }
+  const handlePauseResume = (t: Torrent) => {
+    if (t.paused) resumeTorrent(t.id)
+    else pauseTorrent(t.id)
   }
 
-  const handleDelete = async (t: Torrent, keepFiles: boolean) => {
-    const verb = keepFiles ? 'remove' : 'remove and delete files from'
-    if (!confirm(`${verb} "${t.name}"?`)) return
-    try {
-      await apiCall(`/api/torrents/${t.id}?${keepFiles ? 'keepFiles=1' : ''}`, { method: 'DELETE' })
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: 'Torrent removed' })
-    } catch (e: any) {
-      toast({ title: 'Delete failed', description: e.message, variant: 'destructive' })
-    }
+  const handleDelete = (t: Torrent, _keepFiles: boolean) => {
+    if (!confirm(`Remove "${t.name}"?`)) return
+    removeTorrent(t.id, _keepFiles)
+    toast({ title: 'Torrent removed' })
   }
 
-  const serviceOnline = !!health?.ok
+  const handleDownload = useCallback(
+    (wtFile: any, name: string) => {
+      toast({ title: 'Preparing download', description: 'Fetching file from peers…' })
+      wtFile.getBlobURL((err: any, url: string | null) => {
+        if (err || !url) {
+          toast({ title: 'Download failed', description: err?.message || 'No blob URL', variant: 'destructive' })
+          return
+        }
+        const a = document.createElement('a')
+        a.href = url
+        a.download = name
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        // Revoke the blob URL after the browser starts the download.
+        setTimeout(() => URL.revokeObjectURL(url), 2000)
+      })
+    },
+    [toast]
+  )
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
-      {/* ===== Header =====
-          Thin single row. Wordmark left, status + theme toggle right.
-          Hairline bottom border, no card chrome. */}
+      {/* ===== Header ===== */}
       <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold tracking-tight">TorrentStream</span>
-            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">port {DEFAULT_TORRENT_PORT}</span>
+            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">browser</span>
           </div>
           <div className="flex items-center gap-3">
             <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              <StatusDot state={serviceOnline ? 'online' : 'offline'} />
-              <span className="tabular">{serviceOnline ? 'online' : 'offline'}</span>
+              <StatusDot state={clientReady ? 'online' : 'offline'} />
+              <span className="tabular">{clientReady ? 'webtorrent ready' : 'starting…'}</span>
             </span>
             <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">
-              {torrents?.length ?? 0} active
+              {torrents.length} active
             </span>
-            <SettingsToggle />
             <ThemeToggle />
           </div>
         </div>
@@ -507,9 +294,7 @@ export default function Home() {
 
       {/* ===== Main ===== */}
       <main className="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-8 space-y-8">
-        {/* ---- Input section ----
-            The input itself is the focal point (Liveliness: one focal point per screen).
-            No card chrome around it. Sample torrents are plain text buttons, not pills. */}
+        {/* ---- Input section ---- */}
         <section>
           <label htmlFor="magnet-input" className="block text-[11px] text-muted-foreground mb-2">
             Magnet link or torrent file
@@ -530,23 +315,21 @@ export default function Home() {
                 variant="outline"
                 size="sm"
                 onClick={handlePasteFromClipboard}
-                className="h-11 border-border sm:h-10"
+                className="h-10 border-border"
               >
                 Paste
               </Button>
               <Button
                 size="sm"
                 onClick={handleAddMagnet}
-                disabled={addMagnet.isPending}
-                className="h-11 sm:h-10 bg-amber-500 hover:bg-amber-600 text-amber-950 font-medium"
+                disabled={!clientReady}
+                className="h-10 bg-amber-500 hover:bg-amber-600 text-amber-950 font-medium"
               >
-                {addMagnet.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
                 Add torrent
               </Button>
             </div>
           </div>
 
-          {/* Secondary actions: file upload + samples. Inline, no card. */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3 text-[11px]">
             <label className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5">
               <Upload className="h-3 w-3" />
@@ -558,11 +341,6 @@ export default function Home() {
                 className="hidden"
               />
             </label>
-            {uploadFile.isPending && (
-              <span className="text-muted-foreground inline-flex items-center gap-1">
-                <Loader2 className="h-3 w-3 animate-spin" /> uploading...
-              </span>
-            )}
             <span className="text-muted-foreground">·</span>
             <span className="text-muted-foreground">samples:</span>
             {SAMPLE_TORRENTS.map((s) => (
@@ -577,39 +355,17 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ---- Torrent list ----
-            Variation by state (RHYTHM 2): each torrent card's internal treatment
-            changes based on whether it is loading metadata, active, paused,
-            complete, or in error. */}
+        {/* ---- Torrent list ---- */}
         <section className="hairline pt-6">
-          {/* Loading state (R-27) */}
-          {isLoading && torrents === undefined ? (
+          {!clientReady ? (
             <div className="py-12 flex items-center justify-center text-muted-foreground text-sm">
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              Loading torrents
+              Starting WebTorrent client
             </div>
-          ) : listError ? (
-            /* Error state (R-27): explicit, actionable, no decoration. */
-            <div className="py-12 flex flex-col items-center justify-center text-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-red-500" />
-              <p className="text-sm font-medium">Cannot reach torrent service</p>
-              <p className="text-[11px] text-muted-foreground">
-                Check that the Go backend is reachable. If you are on GitHub Pages, click the settings icon in the header and enter your backend URL (e.g. http://localhost:3003).
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => queryClient.invalidateQueries({ queryKey: ['torrents'] })}
-                className="mt-2 h-8 border-border"
-              >
-                <RefreshCw className="h-3 w-3 mr-1.5" /> Retry
-              </Button>
-            </div>
-          ) : !torrents || torrents.length === 0 ? (
-            /* Empty state (R-27): honest sentence, no illustration, no inflated icon. */
+          ) : torrents.length === 0 ? (
             <div className="py-16 text-center">
               <p className="text-sm text-muted-foreground">No torrents yet.</p>
-              <p className="text-[11px] text-muted-foreground mt-1">
+              <p className="text-[11px] text-muted-foreground/60 mt-1">
                 Paste a magnet link above, or upload a .torrent file.
               </p>
             </div>
@@ -619,7 +375,8 @@ export default function Home() {
                 <TorrentCard
                   key={t.id}
                   torrent={t}
-                  onStream={(file) => setStreamingFile({ torrentId: t.id, file, torrentName: t.name })}
+                  onStream={(file) => setStreamingFile({ wtFile: file.wtFile, file, torrentName: t.name })}
+                  onDownload={(file) => handleDownload(file.wtFile, file.name)}
                   onPauseResume={() => handlePauseResume(t)}
                   onDelete={(keep) => handleDelete(t, keep)}
                 />
@@ -629,14 +386,11 @@ export default function Home() {
         </section>
       </main>
 
-      {/* ===== Footer =====
-          One line. Honest statement of what's running, no marketing copy. */}
+      {/* ===== Footer ===== */}
       <footer className="hairline mt-auto">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-10 flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>Backend: Go + anacrolix/torrent</span>
-          <span className="tabular hidden sm:inline">
-            {torrents?.length ?? 0} torrents
-          </span>
+          <span>Client-side WebTorrent · no server required</span>
+          <span className="tabular hidden sm:inline">{torrents.length} torrents</span>
         </div>
       </footer>
 
@@ -649,15 +403,16 @@ export default function Home() {
 }
 
 // ============ Torrent card ============
-// Layout varies by state. Hairline border only, no shadow (R-12).
 function TorrentCard({
   torrent,
   onStream,
+  onDownload,
   onPauseResume,
   onDelete,
 }: {
   torrent: Torrent
   onStream: (file: TorrentFile) => void
+  onDownload: (file: TorrentFile) => void
   onPauseResume: () => void
   onDelete: (keepFiles: boolean) => void
 }) {
@@ -670,7 +425,6 @@ function TorrentCard({
   const isActive = !torrent.paused && hasMeta && !isDone && torrent.downloadSpeed > 0
   const visibleFiles = showAllFiles ? torrent.files : torrent.files.slice(0, 5)
 
-  // State -> dot
   const dotState: 'active' | 'paused' | 'error' | 'done' = hasError
     ? 'error'
     : isDone
@@ -697,7 +451,6 @@ function TorrentCard({
                 {torrent.name}
               </h3>
             </div>
-            {/* Metadata row: monospace, small. infoHash is data, not chrome. */}
             <p className="text-[11px] text-muted-foreground font-mono truncate">
               {torrent.infoHash ? `${torrent.infoHash.slice(0, 16)}…` : '—'}
               {hasMeta && (
@@ -706,7 +459,6 @@ function TorrentCard({
                 </span>
               )}
             </p>
-            {/* Error state inline (R-27): the error is part of the card, not a toast. */}
             {hasError && (
               <p className="text-[11px] text-red-500 mt-1.5 flex items-start gap-1.5">
                 <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
@@ -715,7 +467,6 @@ function TorrentCard({
             )}
           </div>
 
-          {/* Action buttons. Pause disabled while metadata loads. */}
           <div className="flex items-center gap-1 shrink-0">
             <Button
               variant="ghost"
@@ -745,20 +496,20 @@ function TorrentCard({
                   onClick={() => onDelete(true)}
                   className="text-popover-foreground hover:bg-muted cursor-pointer"
                 >
-                  Remove (keep files)
+                  Remove
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => onDelete(false)}
-                  className="text-red-500 hover:bg-muted cursor-pointer"
+                  className="text-popover-foreground hover:bg-muted cursor-pointer"
                 >
-                  Remove and delete files
+                  Remove (force)
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </div>
 
-        {/* Progress + live stats (R-17: every number is real, from the backend). */}
+        {/* Progress + live stats */}
         {hasMeta && (
           <div className="space-y-2">
             <div className="flex items-center gap-3">
@@ -766,8 +517,6 @@ function TorrentCard({
                 value={torrent.progress * 100}
                 className={cn(
                   'h-1 flex-1 bg-muted',
-                  // The unfilled track gets a slow pulse only when actively downloading.
-                  // Reason: MOTION dial = 1, this is the one allowed motion in the UI.
                   isActive && '[&>div]:bg-amber-500'
                 )}
               />
@@ -800,9 +549,7 @@ function TorrentCard({
                 </span>
               )}
               {isDone && (
-                <span className="text-emerald-600 dark:text-emerald-500">
-                  complete
-                </span>
+                <span className="text-emerald-600 dark:text-emerald-500">complete</span>
               )}
             </div>
           </div>
@@ -825,7 +572,7 @@ function TorrentCard({
                     key={f.index}
                     file={f}
                     onStream={() => onStream(f)}
-                    torrentId={torrent.id}
+                    onDownload={() => onDownload(f)}
                   />
                 ))}
                 {torrent.files.length > 5 && (
@@ -849,18 +596,14 @@ function TorrentCard({
 function FileRow({
   file,
   onStream,
-  torrentId,
+  onDownload,
 }: {
   file: TorrentFile
   onStream: () => void
-  torrentId: string
+  onDownload: () => void
 }) {
-  const downloadUrl = buildApiUrl(`/api/torrents/${torrentId}/download/${file.index}`)
-
   return (
     <div className="flex items-center gap-3 py-1.5 px-1 hover:bg-muted/40 transition-colors group">
-      {/* Letter mark for file type (R-04: replaces Lucide file icons).
-          Reason: tabular letter classification reads as data, not decoration. */}
       <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center border border-border font-mono text-[10px] text-muted-foreground">
         {fileLetter(file)}
       </span>
@@ -883,7 +626,6 @@ function FileRow({
           {file.done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
         </div>
       </div>
-      {/* Actions appear on hover for desktop, always visible on touch via opacity-100 sm:opacity-0 */}
       <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
         {file.streamable && (
           <Button
@@ -895,103 +637,110 @@ function FileRow({
             <Play className="h-3 w-3 mr-1" /> Stream
           </Button>
         )}
-        <a href={downloadUrl} download={file.name}>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-11 w-11 sm:h-6 sm:w-6 p-0 text-muted-foreground hover:text-foreground"
-            aria-label={`Download ${file.name}`}
-            title={`Download ${file.name}`}
-          >
-            <Download className="h-3 w-3" />
-          </Button>
-        </a>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onDownload}
+          className="h-11 w-11 sm:h-6 sm:w-6 p-0 text-muted-foreground hover:text-foreground"
+          aria-label={`Download ${file.name}`}
+          title={`Download ${file.name}`}
+        >
+          <Download className="h-3 w-3" />
+        </Button>
       </div>
     </div>
   )
 }
 
-// ============ Plyr video/audio player ============
-// Wraps Plyr (https://github.com/sampotts/plyr) so we get a clean, accessible
-// custom player UI instead of the browser default. Theming comes from
-// globals.css via Plyr CSS variables (amber accent, warm stone chrome).
-//
-// Implementation notes:
-// - Plyr is initialized once on mount in useEffect, destroyed on unmount.
-// - Callbacks are stored in a ref so changing them does not re-init Plyr.
-// - The retry mechanism uses `key={retryKey}` on this component, which forces
-//   React to remount it, which re-runs the init effect.
-// - We listen to native media events on the underlying <video>/<audio> element
-//   (Plyr does not intercept them) so loading/error states propagate to parent.
+// ============ Plyr + WebTorrent player ============
+// WebTorrent's file.appendTo() creates a media element inside a container and
+// streams the file to it (MediaSource for streamable formats, blob URL
+// fallback for others). We then wrap that element with Plyr for custom
+// controls. This avoids any HTTP URL - the data flows peer-to-peer to the
+// element directly.
 
-interface PlyrPlayerProps {
-  source: string
+interface PlyrTorrentPlayerProps {
+  wtFile: any
   mediaType: 'video' | 'audio'
   onWaiting?: () => void
   onPlaying?: () => void
   onCanPlay?: () => void
-  onError?: () => void
+  onError?: (msg: string) => void
 }
 
-function PlyrPlayer({
-  source,
+function PlyrTorrentPlayer({
+  wtFile,
   mediaType,
   onWaiting,
   onPlaying,
   onCanPlay,
   onError,
-}: PlyrPlayerProps) {
-  const mediaRef = useRef<HTMLMediaElement | null>(null)
+}: PlyrTorrentPlayerProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [mediaEl, setMediaEl] = useState<HTMLMediaElement | null>(null)
   const plyrRef = useRef<Plyr | null>(null)
-  // Refs for the latest callbacks so we don't re-init Plyr on every render.
   const cbRef = useRef({ onWaiting, onPlaying, onCanPlay, onError })
+
   useEffect(() => {
     cbRef.current = { onWaiting, onPlaying, onCanPlay, onError }
   })
 
+  // Ask WebTorrent to append a media element to the container and stream to it.
   useEffect(() => {
-    const media = mediaRef.current
-    if (!media) return
+    const container = containerRef.current
+    if (!container || !wtFile) return
 
-    // Native event handlers read from the ref so they always see the latest
-    // callback without needing to re-add the listener.
+    let cancelled = false
+    // Clear any previous content
+    container.innerHTML = ''
+
+    wtFile.appendTo(
+      container,
+      { autoplay: true, controls: false },
+      (err: any, elem: any) => {
+        if (cancelled) return
+        if (err) {
+          cbRef.current.onError?.(err.message || 'Failed to stream file')
+          return
+        }
+        if (elem) {
+          setMediaEl(elem)
+          // Initial state: waiting for data
+          cbRef.current.onWaiting?.()
+        }
+      }
+    )
+
+    return () => {
+      cancelled = true
+      if (container) container.innerHTML = ''
+      try { plyrRef.current?.destroy() } catch {}
+      plyrRef.current = null
+      setMediaEl(null)
+    }
+  }, [wtFile])
+
+  // Initialize Plyr once the media element exists.
+  useEffect(() => {
+    if (!mediaEl) return
+
+    let cancelled = false
     const handleWaiting = () => cbRef.current.onWaiting?.()
     const handlePlaying = () => cbRef.current.onPlaying?.()
     const handleCanPlay = () => cbRef.current.onCanPlay?.()
-    const handleError = () => cbRef.current.onError?.()
-    const handleLoadStart = () => cbRef.current.onWaiting?.()
+    const handleError = () => cbRef.current.onError?.('Stream failed')
 
-    media.addEventListener('waiting', handleWaiting)
-    media.addEventListener('playing', handlePlaying)
-    media.addEventListener('canplay', handleCanPlay)
-    media.addEventListener('error', handleError)
-    media.addEventListener('loadstart', handleLoadStart)
+    mediaEl.addEventListener('waiting', handleWaiting)
+    mediaEl.addEventListener('playing', handlePlaying)
+    mediaEl.addEventListener('canplay', handleCanPlay)
+    mediaEl.addEventListener('error', handleError)
 
-    // Dynamic import: Plyr's source references `document` at module load,
-    // so importing it at the top of this file breaks Next.js SSR. Loading it
-    // inside useEffect guarantees we only run it in the browser.
-    let cancelled = false
     import('plyr').then(({ default: Plyr }) => {
-      if (cancelled || !mediaRef.current) return
-
-      // Reason for control list: only show controls that work for streamed
-      // torrent content (no download button since we have our own, no airplay
-      // since the source is a torrent stream, captions only if present).
-      plyrRef.current = new Plyr(mediaRef.current, {
+      if (cancelled || !mediaEl) return
+      plyrRef.current = new Plyr(mediaEl, {
         controls:
           mediaType === 'video'
-            ? [
-                'play-large',
-                'play',
-                'progress',
-                'current-time',
-                'duration',
-                'mute',
-                'volume',
-                'settings',
-                'pip',
-                'fullscreen',
-              ]
+            ? ['play-large', 'play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings', 'pip', 'fullscreen']
             : ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings'],
         settings: ['speed'],
         autoplay: true,
@@ -1005,41 +754,17 @@ function PlyrPlayer({
 
     return () => {
       cancelled = true
-      media.removeEventListener('waiting', handleWaiting)
-      media.removeEventListener('playing', handlePlaying)
-      media.removeEventListener('canplay', handleCanPlay)
-      media.removeEventListener('error', handleError)
-      media.removeEventListener('loadstart', handleLoadStart)
-      try {
-        plyrRef.current?.destroy()
-      } catch {
-        // Plyr can throw if the DOM was already torn down; safe to ignore.
-      }
+      mediaEl.removeEventListener('waiting', handleWaiting)
+      mediaEl.removeEventListener('playing', handlePlaying)
+      mediaEl.removeEventListener('canplay', handleCanPlay)
+      mediaEl.removeEventListener('error', handleError)
+      try { plyrRef.current?.destroy() } catch {}
       plyrRef.current = null
     }
-    // Empty deps: Plyr inits once on mount. Source changes handled by remount via key prop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [mediaEl, mediaType])
 
-  return (
-    <div className="w-full h-full">
-      {mediaType === 'video' ? (
-        <video
-          ref={mediaRef as React.RefObject<HTMLVideoElement>}
-          src={source}
-          className="w-full h-full"
-          playsInline
-          // No `controls` attribute: Plyr provides its own.
-          // No `autoPlay` attribute: Plyr option handles it (more reliable across browsers).
-        />
-      ) : (
-        <audio
-          ref={mediaRef as React.RefObject<HTMLAudioElement>}
-          src={source}
-        />
-      )}
-    </div>
-  )
+  return <div ref={containerRef} className="w-full h-full" />
 }
 
 // ============ Video player modal ============
@@ -1047,11 +772,10 @@ function VideoPlayerModal({
   data,
   onClose,
 }: {
-  data: { torrentId: string; file: TorrentFile; torrentName: string }
+  data: { wtFile: any; file: TorrentFile; torrentName: string }
   onClose: () => void
 }) {
-  const { file, torrentId, torrentName } = data
-  const streamUrl = buildApiUrl(`/api/torrents/${torrentId}/stream/${file.index}`)
+  const { file, wtFile, torrentName } = data
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
@@ -1063,9 +787,7 @@ function VideoPlayerModal({
 
   // Close on Escape (R-32).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -1078,7 +800,6 @@ function VideoPlayerModal({
           Streaming {file.name} from {torrentName}, {formatBytes(file.length)}.
         </DialogDescription>
 
-        {/* Header bar */}
         <div className="px-4 py-3 border-b border-border flex items-start justify-between">
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate font-mono">{file.name}</p>
@@ -1097,13 +818,12 @@ function VideoPlayerModal({
           </Button>
         </div>
 
-        {/* Player surface. True black for video, no border. */}
         <div className="relative bg-black aspect-video">
           {loading && !error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-stone-400">
               <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
               <p className="text-xs">Buffering…</p>
-              <p className="text-[10px] text-stone-600">torrent pieces loading</p>
+              <p className="text-[10px] text-stone-600">fetching pieces from peers</p>
             </div>
           )}
           {error && (
@@ -1120,64 +840,43 @@ function VideoPlayerModal({
               </Button>
             </div>
           )}
-          {file.isVideo ? (
-            <PlyrPlayer
-              key={retryKey}
-              source={streamUrl}
-              mediaType="video"
-              onWaiting={() => setLoading(true)}
-              onPlaying={() => setLoading(false)}
-              onCanPlay={() => setLoading(false)}
-              onError={() => {
-                setError('Stream failed. The torrent may not have enough peers yet, or the format is not supported by the browser.')
-                setLoading(false)
-              }}
-            />
-          ) : file.isAudio ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6">
-              <div className="h-16 w-16 rounded-full border border-stone-700 flex items-center justify-center">
-                <span className="font-mono text-sm text-stone-400">A</span>
-              </div>
-              <p className="text-xs text-stone-300 text-center font-mono">{file.name}</p>
-              <div className="w-full max-w-md">
-                <PlyrPlayer
-                  key={retryKey}
-                  source={streamUrl}
-                  mediaType="audio"
-                  onWaiting={() => setLoading(true)}
-                  onPlaying={() => setLoading(false)}
-                  onError={() => {
-                    setError('Audio stream failed. Retry or check peer count.')
-                    setLoading(false)
-                  }}
-                />
-              </div>
-            </div>
-          ) : file.isImage ? (
-            <img
-              key={retryKey}
-              src={streamUrl}
-              alt={file.name}
-              className="w-full h-full object-contain"
-              onLoad={() => setLoading(false)}
-              onError={() => {
-                setError('Failed to load image.')
-                setLoading(false)
-              }}
-            />
-          ) : null}
+          {/* The key=retryKey forces PlyrTorrentPlayer to remount on retry,
+              which re-runs file.appendTo() and re-inits Plyr. */}
+          <PlyrTorrentPlayer
+            key={retryKey}
+            wtFile={wtFile}
+            mediaType={file.isVideo ? 'video' : 'audio'}
+            onWaiting={() => setLoading(true)}
+            onPlaying={() => setLoading(false)}
+            onCanPlay={() => setLoading(false)}
+            onError={(msg) => { setError(msg); setLoading(false) }}
+          />
         </div>
 
-        {/* Footer */}
         <div className="px-4 py-2 border-t border-border flex items-center justify-between text-[11px] text-muted-foreground">
           <span className="font-mono tabular">
             {file.ext.toUpperCase()} · {formatBytes(file.length)}
           </span>
-          <a href={buildApiUrl(`/api/torrents/${torrentId}/download/${file.index}`)} download={file.name}>
-            <Button variant="outline" size="sm" className="h-7 border-border">
-              <Download className="h-3 w-3 mr-1.5" /> Download
-            </Button>
-          </a>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              // Download via blob URL (full file fetch)
+              wtFile.getBlobURL((err: any, url: string | null) => {
+                if (err || !url) return
+                const a = document.createElement('a')
+                a.href = url
+                a.download = file.name
+                document.body.appendChild(a)
+                a.click()
+                a.remove()
+                setTimeout(() => URL.revokeObjectURL(url), 2000)
+              })
+            }}
+            className="h-7 border-border"
+          >
+            <Download className="h-3 w-3 mr-1.5" /> Download
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
