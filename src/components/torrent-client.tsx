@@ -101,10 +101,12 @@ function loadWebTorrent(): Promise<any> {
     // window.location.href as the base handles both production (subpath)
     // and local dev (root) correctly.
     const url = new URL('webtorrent.min.js', window.location.href).href
-    // The import() argument is a runtime variable, so the bundler cannot
-    // statically resolve it. This keeps the native Node deps in the
-    // webtorrent npm package out of the SSR build.
-    const mod = await import(/* @vite-ignore */ url as any)
+    // Next.js/Turbopack statically analyzes import() calls and fails with
+    // "Can't resolve <dynamic>" for variable arguments. Wrap the import in
+    // a Function constructor so the bundler cannot see the import call at
+    // build time. This is a well-known workaround for fully-dynamic imports.
+    const dynamicImport = new Function('spec', 'return import(spec)') as (spec: string) => Promise<any>
+    const mod = await dynamicImport(url)
     const WT = mod.default || mod.WebTorrent || mod
     if (!WT) throw new Error('WebTorrent constructor not found in module')
     return WT
