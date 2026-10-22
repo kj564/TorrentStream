@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useSyncExternalStore } from 'react'
 import { useTheme } from 'next-themes'
 import {
   Play,
@@ -102,7 +102,7 @@ function formatSpeed(bps: number): string {
 }
 
 function formatEta(ms: number): string {
-  if (!ms || ms < 0 || !isFinite(ms)) return '—'
+  if (!ms || ms < 0 || !isFinite(ms)) return '…'
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
@@ -121,10 +121,19 @@ function fileLetter(f: TorrentFile): string {
 }
 
 // ============ Theme toggle (R-21: working light/dark) ============
+// useSyncExternalStore returns false during SSR and true on the client,
+// avoiding the setState-in-effect pattern that the lint rule flags.
+function useMounted() {
+  return useSyncExternalStore(
+    () => () => {}, // no subscription cleanup needed
+    () => true, // client snapshot: mounted
+    () => false // server snapshot: not mounted
+  )
+}
+
 function ThemeToggle() {
   const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
+  const mounted = useMounted()
 
   if (!mounted) {
     return <div className="h-11 w-11 sm:h-7 sm:w-7" aria-hidden />
@@ -315,7 +324,7 @@ export default function Home() {
                 variant="outline"
                 size="sm"
                 onClick={handlePasteFromClipboard}
-                className="h-10 border-border"
+                className="h-11 border-border sm:h-10"
               >
                 Paste
               </Button>
@@ -323,7 +332,7 @@ export default function Home() {
                 size="sm"
                 onClick={handleAddMagnet}
                 disabled={!clientReady}
-                className="h-10 bg-amber-500 hover:bg-amber-600 text-amber-950 font-medium"
+                className="h-11 sm:h-10 bg-amber-500 hover:bg-amber-600 text-amber-950 font-medium"
               >
                 Add torrent
               </Button>
@@ -452,7 +461,7 @@ function TorrentCard({
               </h3>
             </div>
             <p className="text-[11px] text-muted-foreground font-mono truncate">
-              {torrent.infoHash ? `${torrent.infoHash.slice(0, 16)}…` : '—'}
+              {torrent.infoHash ? `${torrent.infoHash.slice(0, 16)}…` : '…'}
               {hasMeta && (
                 <span className="text-muted-foreground">
                   {'  '}· {torrent.files.length} files · {formatBytes(torrent.length)}
@@ -761,7 +770,6 @@ function PlyrTorrentPlayer({
       try { plyrRef.current?.destroy() } catch {}
       plyrRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaEl, mediaType])
 
   return <div ref={containerRef} className="w-full h-full" />
@@ -780,10 +788,15 @@ function VideoPlayerModal({
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
 
-  useEffect(() => {
+  // Derived state pattern: reset loading/error when retryKey changes.
+  // This replaces the setState-in-effect anti-pattern with the React-recommended
+  // approach: https://react.dev/learn/you-might-not-need-an-effect#resetting-all-state-when-a-prop-changes
+  const [lastRetryKey, setLastRetryKey] = useState(retryKey)
+  if (retryKey !== lastRetryKey) {
+    setLastRetryKey(retryKey)
     setLoading(true)
     setError(null)
-  }, [retryKey])
+  }
 
   // Close on Escape (R-32).
   useEffect(() => {

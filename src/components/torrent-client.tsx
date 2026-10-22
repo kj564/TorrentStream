@@ -133,11 +133,9 @@ export function TorrentClientProvider({ children }: { children: ReactNode }) {
           dht: false,
         })
         setClient(c)
-        // eslint-disable-next-line no-console
         console.log('[webtorrent] client ready')
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
         console.error('[webtorrent] failed to load:', err)
       })
     return () => { cancelled = true }
@@ -250,11 +248,9 @@ export function TorrentClientProvider({ children }: { children: ReactNode }) {
         t.on('upload', () => updateOne(id))
         t.on('done', () => updateOne(id))
         t.on('warning', (err: any) => {
-          // eslint-disable-next-line no-console
           console.warn(`[webtorrent] warning for ${id}:`, err.message)
         })
         t.on('error', (err: any) => {
-          // eslint-disable-next-line no-console
           console.error(`[webtorrent] error for ${id}:`, err.message)
           setTorrents((prev) =>
             prev.map((tt) => (tt.id === id ? { ...tt, error: err.message } : tt))
@@ -264,7 +260,6 @@ export function TorrentClientProvider({ children }: { children: ReactNode }) {
         setTorrents((prev) => [...prev, serialize(id, t, magnet, createdAt)])
         return id
       } catch (err: any) {
-        // eslint-disable-next-line no-console
         console.error('[webtorrent] addTorrent failed:', err)
         return null
       }
