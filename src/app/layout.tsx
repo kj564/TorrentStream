@@ -9,29 +9,19 @@ const geistSans = Geist({
   subsets: ["latin"],
 });
 
+// Geist Mono is used for ALL data: numbers, hashes, sizes, speeds.
+// Reason: tabular alignment is functional for scanning columns of figures,
+// and monospace signals "machine output, treat as data". See DESIGN.md.
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "TorrentStream - Stream & Download Torrents in Browser",
-  description: "Browser-based torrent streaming and download client. Paste a magnet link or upload a .torrent file to stream videos, audio, and download any file directly.",
-  keywords: ["torrent", "magnet", "stream", "webtorrent", "download", "bittorrent"],
+  title: "TorrentStream",
+  description: "Stream and download torrents in the browser. Paste a magnet link or upload a .torrent file.",
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },
-  openGraph: {
-    title: "TorrentStream",
-    description: "Stream & download torrents directly in your browser",
-    url: "https://chat.z.ai",
-    siteName: "TorrentStream",
-    type: "website",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "TorrentStream",
-    description: "Stream & download torrents directly in your browser",
   },
 };
 
@@ -41,7 +31,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >

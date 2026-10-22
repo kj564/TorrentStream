@@ -56,3 +56,35 @@ Stage Summary:
 - Migration preserved full UI/UX parity with the previous Node version.
 - Artifacts: mini-services/torrent-service/{go.mod, main.go, .air.toml}, src/app/page.tsx, src/components/providers.tsx, src/app/layout.tsx.
 - Logs: /home/z/my-project/torrent-service.log (Go backend), /home/z/my-project/dev.log (frontend).
+
+---
+Task ID: ui-antislop-refactor
+Agent: main (Z.ai Code)
+Task: Improve UI/UX using microsoft/playwright, Leonxlnx/taste-skill, and miqdadbadjuber/anti-slop.
+
+Work Log:
+- Researched all three projects by fetching their READMEs:
+  - **Playwright**: browser automation library for testing/screenshotting at multiple widths. I used `agent-browser` (already available, Playwright-based) for all verification screenshots.
+  - **taste-skill**: agent skill that audits UI against 247 curated sites. Key principles applied: "app screens route" (quiet panels, aligned figures, color spent on data, navigation folds on phone), "frame checks" (clear title on first screen, equal margins, no random blank stretches), and the six-step build with three self-check rounds.
+  - **anti-slop**: 38 mandatory rules in three tiers (Hard Gate, Purpose-Gate, Quality Locks) + Liveliness Toolkit (ENERGY/RHYTHM/MOTION dials) + Delivery Gate PASS/FAIL report.
+- Wrote `DESIGN.md` at project root declaring art direction (R-37 requirement): instrument-panel aesthetic, warm stone palette + single amber accent, Geist Sans/Mono split typography, dials ENERGY 1 / RHYTHM 2 / MOTION 1. Documented reasons for every major decision (R-31).
+- Rewrote `src/app/globals.css` to replace cool-neutral oklch values with warm-stone oklch (0.005 chroma at 75 hue). Set amber-500 as the single accent. Added visible focus ring (R-32): `*:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px }`. Added `tabular` utility class for `font-variant-numeric: tabular-nums`. Added `hairline` utility for section dividers (replaces card chrome).
+- Updated `src/app/layout.tsx`: removed forced `className="dark"`, now relies on next-themes with system default. Added Providers wrapper with ThemeProvider.
+- Updated `src/components/providers.tsx`: wraps QueryClientProvider + ThemeProvider (R-21: working light/dark toggle).
+- Rewrote `src/app/page.tsx` completely:
+  - **Removed**: emerald gradient logo (R-01), shadow-lg shadow-emerald-500/20 on logo (R-12, R-13), Lucide file-type icons Film/Music/Image/FileText (R-04), capsule badges with dot+border (R-09), all text-muted-foreground/60 and /40 opacity (R-25 contrast violation caught by VLM audit), generic "Real-time streaming / P2P powered" footer copy (R-16).
+  - **Added**: text wordmark "TorrentStream" + "port 3003" metadata, theme toggle button (Sun/Moon), 6px status dot pattern (online/active/paused/error/done), letter marks (V/A/I/S/T) for file types, hairline section dividers, tabular figures on all numbers, per-torrent inline error display (R-27), explicit error state for service unreachable (R-27), amber-500 as single accent color, responsive tap targets (h-11 on mobile, sm:h-7 on desktop) for R-03 compliance.
+- Verified via Agent Browser + VLM at three viewports (mobile 375, tablet 768, desktop 1280) and both themes:
+  - Mobile: no horizontal overflow (scrollW === clientW === 375), all 10 sampled buttons at 44px height (R-03 PASS).
+  - Theme toggle: clicked, `document.documentElement.className` switched between "light" and "dark" (R-34 PASS).
+  - VLM audit on dark mode: "avoids AI slop... functional minimalism... technical authenticity" → **PASS**.
+  - VLM audit on light mode (first pass): caught contrast issue on text-muted-foreground/60 → fixed → re-audit: "all text exceeds 4.5:1... no AI-slop... accessible" → **PASS**.
+  - VLM final audit: "No AI Slop detected... Strong and specific identity... clearly a technical tool for torrent management" → **PASS**.
+  - Functional click-through (R-35): Sintel sample button → fills input; Add torrent → POST to backend; toast "Torrent added" appears; theme toggle → class changes; all verified.
+- Wrote `antislop-gate-report.md` with formal PASS/FAIL for all 38 rules across 4 blocks (Hard Gate, Purpose-Gate, Liveliness, Craftsmanship & Quality Locks). Final verdict: **PASS** on all blocks.
+
+Stage Summary:
+- Three reference projects applied: Playwright (via agent-browser) for 3-width verification; taste-skill for app-screen rules (quiet panels, color on data, frame checks); anti-slop for the 38-rule filter and Delivery Gate.
+- Artifacts: `DESIGN.md` (art direction), `antislop-gate-report.md` (formal PASS/FAIL report), updated `src/app/globals.css` (warm stone palette + focus ring), updated `src/app/layout.tsx` (next-themes), updated `src/components/providers.tsx` (ThemeProvider), rewritten `src/app/page.tsx` (~900 lines, antislop-compliant).
+- Visual identity: warm-stone dark + amber accent + Geist Mono for all data + hairline rules + 6px status dots + letter marks for file types. Single accent color, single typeface pair, single motion (pulse on active state only).
+- All Hard Gate rules pass. All Purpose-Gate techniques either avoided or have written reasons. Liveliness dials set and consistent. Three VLM audits: all PASS.

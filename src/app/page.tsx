@@ -1,42 +1,33 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTheme } from 'next-themes'
 import {
-  Magnet,
-  Upload,
-  Download,
   Play,
   Pause,
   Trash2,
-  Film,
-  Music,
-  Image as ImageIcon,
-  FileText,
-  File,
-  Users,
-  Gauge,
+  Download,
   Loader2,
   X,
   RefreshCw,
-  HardDriveDownload,
   CheckCircle2,
   AlertTriangle,
-  Plus,
-  Server,
-  Clock
+  Upload,
+  Sun,
+  Moon,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
-import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
-  DialogDescription
+  DialogDescription,
 } from '@/components/ui/dialog'
 import {
   DropdownMenu,
@@ -47,7 +38,16 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
-// ============ Types ============
+/* ============================================================
+ * DESIGN.md reference
+ * Identity: instrument-panel aesthetic. Data dominates, decoration recedes.
+ * Palette: warm stone neutrals + single amber accent (R-29).
+ * Typography: Geist Sans for prose, Geist Mono for all data (R-06 reason:
+ * tabular alignment is functional, signals "machine output").
+ * Dials: ENERGY 1 / RHYTHM 2 / MOTION 1 (see DESIGN.md Liveliness Toolkit).
+ * ============================================================ */
+
+// ============ Types (matches Go backend JSON shape) ============
 interface TorrentFile {
   index: number
   name: string
@@ -86,39 +86,39 @@ interface Torrent {
 // ============ Constants ============
 const TORRENT_PORT = 3003
 
-// Sample torrents (free / public domain)
-const SAMPLE_TORRENTS: { name: string; magnet: string; desc: string }[] = [
+// Sample torrents (free / public domain Blender open movies).
+// Reason these are here: they are real, working torrents that let a new
+// user verify the system end-to-end without hunting for a magnet link.
+const SAMPLE_TORRENTS: { name: string; magnet: string }[] = [
   {
-    name: 'Sintel (Blender)',
-    desc: 'Open movie by Blender, 1080p',
-    magnet: 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d811df5ee1ae3579e3da&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com'
+    name: 'Sintel',
+    magnet: 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d811df5ee1ae3579e3da&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
   },
   {
     name: 'Big Buck Bunny',
-    desc: 'Open movie by Blender',
-    magnet: 'magnet:?xt=urn:btih:dd8255ecdc7ca1fb9914cc6a2783a1522b9eee7a&dn=BigBuckBunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com'
+    magnet: 'magnet:?xt=urn:btih:dd8255ecdc7ca1fb9914cc6a2783a1522b9eee7a&dn=BigBuckBunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
   },
   {
     name: 'Tears of Steel',
-    desc: 'Open sci-fi movie by Blender',
     magnet: 'magnet:?xt=urn:btih:209c8a6f6f5e8f3a0cb5f1d5f2f1d0b5e1f3a3cb&dn=TearsOfSteel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Ftracker.tiny-vps.com%3A6969'
-  }
+  },
 ]
 
-// ============ Utility functions ============
+// ============ Utility ============
 function formatBytes(bytes: number, decimals = 2): string {
   if (!bytes || bytes <= 0) return '0 B'
   const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1)
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(decimals))} ${sizes[i]}`
 }
 
-function formatSpeed(bytesPerSec: number): string {
-  return formatBytes(bytesPerSec) + '/s'
+function formatSpeed(bps: number): string {
+  return formatBytes(bps) + '/s'
 }
 
-function formatTime(ms: number): string {
+function formatEta(ms: number): string {
+  if (!ms || ms < 0 || !isFinite(ms)) return '—'
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
@@ -127,12 +127,14 @@ function formatTime(ms: number): string {
   return `${h}h ${m % 60}m`
 }
 
-function getFileIcon(file: TorrentFile) {
-  if (file.isVideo) return <Film className="h-4 w-4 text-purple-400" />
-  if (file.isAudio) return <Music className="h-4 w-4 text-blue-400" />
-  if (file.isImage) return <ImageIcon className="h-4 w-4 text-green-400" />
-  if (file.isSubtitle) return <FileText className="h-4 w-4 text-yellow-400" />
-  return <File className="h-4 w-4 text-zinc-400" />
+// Letter mark for file types. Replaces Lucide icons (R-04: avoid library look).
+// Reason: tabular letter marks read as data classification, not decoration.
+function fileLetter(f: TorrentFile): string {
+  if (f.isVideo) return 'V'
+  if (f.isAudio) return 'A'
+  if (f.isImage) return 'I'
+  if (f.isSubtitle) return 'S'
+  return 'T'
 }
 
 // ============ API helpers ============
@@ -156,7 +158,7 @@ function useTorrents() {
       const res = await apiCall('/api/torrents')
       return res.json()
     },
-    refetchInterval: 1500, // Poll every 1.5s for progress
+    refetchInterval: 1500,
     staleTime: 0,
   })
 }
@@ -172,16 +174,65 @@ function useServiceHealth() {
   })
 }
 
+// ============ Theme toggle (R-21: working light/dark) ============
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+
+  if (!mounted) {
+    // Placeholder to avoid hydration mismatch (next-themes sets class on <html>
+    // at load time; we can't know it on the server).
+    return <div className="h-11 w-11 sm:h-7 sm:w-7" aria-hidden />
+  }
+
+  const isDark = theme === 'dark'
+  return (
+    <button
+      onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      className="inline-flex h-11 w-11 sm:h-7 sm:w-7 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+    >
+      {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+    </button>
+  )
+}
+
+// ============ Status dot (identity motif) ============
+function StatusDot({
+  state,
+  className,
+}: {
+  state: 'online' | 'offline' | 'active' | 'paused' | 'error' | 'done'
+  className?: string
+}) {
+  const colors: Record<string, string> = {
+    online: 'bg-amber-500',
+    offline: 'bg-muted-foreground/40',
+    active: 'bg-amber-500',
+    paused: 'bg-muted-foreground/60',
+    error: 'bg-red-500',
+    done: 'bg-emerald-500', // emerald appears ONLY as data (complete state), never as chrome
+  }
+  const pulse = state === 'online' || state === 'active'
+  return (
+    <span
+      className={cn('inline-block h-1.5 w-1.5 rounded-full', colors[state], pulse && 'animate-pulse', className)}
+      aria-hidden
+    />
+  )
+}
+
 // ============ Main Page ============
 export default function Home() {
   const { toast } = useToast()
   const queryClient = useQueryClient()
-  const { data: torrents, isLoading } = useTorrents()
+  const { data: torrents, isLoading, isError: listError } = useTorrents()
   const { data: health } = useServiceHealth()
   const [magnetInput, setMagnetInput] = useState('')
   const [streamingFile, setStreamingFile] = useState<{ torrentId: string; file: TorrentFile; torrentName: string } | null>(null)
 
-  // Add magnet torrent
   const addMagnet = useMutation({
     mutationFn: async (magnet: string) => {
       const res = await apiCall('/api/torrents', {
@@ -193,15 +244,14 @@ export default function Home() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: 'Torrent added', description: data.existing ? 'Already in list' : 'Started downloading' })
+      toast({ title: data.existing ? 'Already in list' : 'Torrent added' })
       setMagnetInput('')
     },
     onError: (err: Error) => {
-      toast({ title: 'Failed to add', description: err.message, variant: 'destructive' })
+      toast({ title: 'Failed to add torrent', description: err.message, variant: 'destructive' })
     }
   })
 
-  // Upload .torrent file
   const uploadFile = useMutation({
     mutationFn: async (file: File) => {
       const fd = new FormData()
@@ -211,7 +261,7 @@ export default function Home() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: 'Torrent file added', description: 'Started downloading' })
+      toast({ title: 'Torrent file added' })
     },
     onError: (err: Error) => {
       toast({ title: 'Upload failed', description: err.message, variant: 'destructive' })
@@ -224,38 +274,18 @@ export default function Home() {
     e.target.value = ''
   }
 
-  const handleAddMagnet = () => {
+  const handleAddMagnet = useCallback(() => {
     const m = magnetInput.trim()
     if (!m) {
-      toast({ title: 'Empty', description: 'Please enter a magnet link', variant: 'destructive' })
+      toast({ title: 'Empty input', description: 'Paste a magnet link first.', variant: 'destructive' })
       return
     }
     if (!m.startsWith('magnet:')) {
-      toast({ title: 'Invalid', description: 'Please enter a valid magnet link', variant: 'destructive' })
+      toast({ title: 'Not a magnet link', description: 'A magnet link starts with "magnet:".', variant: 'destructive' })
       return
     }
     addMagnet.mutate(m)
-  }
-
-  const handlePauseResume = async (t: Torrent) => {
-    try {
-      await apiCall(`/api/torrents/${t.id}/${t.paused ? 'resume' : 'pause'}`, { method: 'POST' })
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-    } catch (e: any) {
-      toast({ title: 'Action failed', description: e.message, variant: 'destructive' })
-    }
-  }
-
-  const handleDelete = async (t: Torrent, keepFiles: boolean) => {
-    if (!confirm(`Delete "${t.name}"?${keepFiles ? ' Files will be kept on disk.' : ' Files will also be deleted.'}`)) return
-    try {
-      await apiCall(`/api/torrents/${t.id}?${keepFiles ? 'keepFiles=1' : ''}`, { method: 'DELETE' })
-      queryClient.invalidateQueries({ queryKey: ['torrents'] })
-      toast({ title: 'Torrent removed' })
-    } catch (e: any) {
-      toast({ title: 'Delete failed', description: e.message, variant: 'destructive' })
-    }
-  }
+  }, [magnetInput, addMagnet, toast])
 
   const handlePasteFromClipboard = async () => {
     try {
@@ -271,159 +301,198 @@ export default function Home() {
     }
   }
 
+  const handlePauseResume = async (t: Torrent) => {
+    try {
+      await apiCall(`/api/torrents/${t.id}/${t.paused ? 'resume' : 'pause'}`, { method: 'POST' })
+      queryClient.invalidateQueries({ queryKey: ['torrents'] })
+    } catch (e: any) {
+      toast({ title: 'Action failed', description: e.message, variant: 'destructive' })
+    }
+  }
+
+  const handleDelete = async (t: Torrent, keepFiles: boolean) => {
+    const verb = keepFiles ? 'remove' : 'remove and delete files from'
+    if (!confirm(`${verb} "${t.name}"?`)) return
+    try {
+      await apiCall(`/api/torrents/${t.id}?${keepFiles ? 'keepFiles=1' : ''}`, { method: 'DELETE' })
+      queryClient.invalidateQueries({ queryKey: ['torrents'] })
+      toast({ title: 'Torrent removed' })
+    } catch (e: any) {
+      toast({ title: 'Delete failed', description: e.message, variant: 'destructive' })
+    }
+  }
+
+  const serviceOnline = !!health?.ok
+
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
-      {/* Header */}
-      <header className="border-b border-zinc-800/80 bg-zinc-900/60 backdrop-blur sticky top-0 z-30">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <HardDriveDownload className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">TorrentStream</h1>
-              <p className="text-[11px] text-zinc-500 -mt-0.5">Stream & download torrents directly in your browser</p>
-            </div>
+    <div className="min-h-screen flex flex-col bg-background text-foreground">
+      {/* ===== Header =====
+          Thin single row. Wordmark left, status + theme toggle right.
+          Hairline bottom border, no card chrome. */}
+      <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm font-semibold tracking-tight">TorrentStream</span>
+            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">port {TORRENT_PORT}</span>
           </div>
           <div className="flex items-center gap-3">
-            <Badge variant="outline" className={cn(
-              "border-zinc-700 text-[11px] gap-1.5",
-              health?.ok ? "text-emerald-400" : "text-red-400"
-            )}>
-              <span className={cn("h-1.5 w-1.5 rounded-full", health?.ok ? "bg-emerald-400 animate-pulse" : "bg-red-400")} />
-              {health?.ok ? 'Service Online' : 'Offline'}
-            </Badge>
-            <Badge variant="outline" className="border-zinc-700 text-[11px] text-zinc-400">
-              <Server className="h-3 w-3 mr-1" />
-              {torrents?.length || 0} active
-            </Badge>
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <StatusDot state={serviceOnline ? 'online' : 'offline'} />
+              <span className="tabular">{serviceOnline ? 'online' : 'offline'}</span>
+            </span>
+            <span className="hidden sm:inline text-[11px] text-muted-foreground tabular">
+              {torrents?.length ?? 0} active
+            </span>
+            <ThemeToggle />
           </div>
         </div>
       </header>
 
-      {/* Main */}
-      <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-6 space-y-6">
-        {/* Input Card */}
-        <Card className="bg-zinc-900/60 border-zinc-800">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Magnet className="h-4 w-4 text-emerald-400" />
-              Add Torrent
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Input
-                value={magnetInput}
-                onChange={(e) => setMagnetInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddMagnet() }}
-                placeholder="Paste magnet link here (magnet:?xt=urn:btih:...)"
-                className="flex-1 bg-zinc-950 border-zinc-800 font-mono text-xs"
-              />
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handlePasteFromClipboard} className="border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100">
-                  Paste
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleAddMagnet}
-                  disabled={addMagnet.isPending}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
-                >
-                  {addMagnet.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                  Add
-                </Button>
-              </div>
+      {/* ===== Main ===== */}
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-8 space-y-8">
+        {/* ---- Input section ----
+            The input itself is the focal point (Liveliness: one focal point per screen).
+            No card chrome around it. Sample torrents are plain text buttons, not pills. */}
+        <section>
+          <label htmlFor="magnet-input" className="block text-[11px] text-muted-foreground mb-2">
+            Magnet link or torrent file
+          </label>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input
+              id="magnet-input"
+              value={magnetInput}
+              onChange={(e) => setMagnetInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddMagnet() }}
+              placeholder="magnet:?xt=urn:btih:..."
+              className="flex-1 font-mono text-xs h-10 bg-background border-border"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePasteFromClipboard}
+                className="h-11 border-border sm:h-10"
+              >
+                Paste
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleAddMagnet}
+                disabled={addMagnet.isPending}
+                className="h-11 sm:h-10 bg-amber-500 hover:bg-amber-600 text-amber-950 font-medium"
+              >
+                {addMagnet.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                Add torrent
+              </Button>
             </div>
+          </div>
 
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <label className="cursor-pointer">
-                <input type="file" accept=".torrent,application/x-bittorrent" onChange={handleFileUpload} className="hidden" />
-                <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-zinc-700 bg-zinc-950 hover:bg-zinc-800 hover:text-zinc-100 transition">
-                  <Upload className="h-3.5 w-3.5" /> Upload .torrent file
-                </span>
-              </label>
-              {uploadFile.isPending && (
-                <span className="text-xs text-zinc-500 inline-flex items-center gap-1.5">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Uploading...
-                </span>
-              )}
-              <span className="text-xs text-zinc-600 ml-auto">Or try a sample:</span>
-              {SAMPLE_TORRENTS.map((s) => (
-                <Button
-                  key={s.name}
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setMagnetInput(s.magnet)}
-                  className="h-7 text-[11px] text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-                >
-                  {s.name}
-                </Button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Torrents List */}
-        {isLoading && torrents === undefined ? (
-          <Card className="bg-zinc-900/60 border-zinc-800">
-            <CardContent className="py-8 flex items-center justify-center text-zinc-500 text-sm">
-              <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading torrents...
-            </CardContent>
-          </Card>
-        ) : !torrents || torrents.length === 0 ? (
-          <Card className="bg-zinc-900/40 border-dashed border-zinc-800">
-            <CardContent className="py-12 flex flex-col items-center justify-center text-center">
-              <div className="h-12 w-12 rounded-full bg-zinc-800/60 flex items-center justify-center mb-3">
-                <Magnet className="h-6 w-6 text-zinc-600" />
-              </div>
-              <p className="text-sm font-medium text-zinc-300">No torrents yet</p>
-              <p className="text-xs text-zinc-600 mt-1 max-w-sm">
-                Paste a magnet link above or upload a .torrent file to start streaming or downloading.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-3">
-            {torrents.map((t) => (
-              <TorrentCard
-                key={t.id}
-                torrent={t}
-                onStream={(file) => setStreamingFile({ torrentId: t.id, file, torrentName: t.name })}
-                onPauseResume={() => handlePauseResume(t)}
-                onDelete={(keep) => handleDelete(t, keep)}
+          {/* Secondary actions: file upload + samples. Inline, no card. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mt-3 text-[11px]">
+            <label className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5">
+              <Upload className="h-3 w-3" />
+              <span>Upload .torrent file</span>
+              <input
+                type="file"
+                accept=".torrent,application/x-bittorrent"
+                onChange={handleFileUpload}
+                className="hidden"
               />
+            </label>
+            {uploadFile.isPending && (
+              <span className="text-muted-foreground inline-flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" /> uploading...
+              </span>
+            )}
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">samples:</span>
+            {SAMPLE_TORRENTS.map((s) => (
+              <button
+                key={s.name}
+                onClick={() => setMagnetInput(s.magnet)}
+                className="text-muted-foreground hover:text-foreground underline-offset-4 hover:underline transition-colors inline-flex items-center h-11 sm:h-6 px-1"
+              >
+                {s.name}
+              </button>
             ))}
           </div>
-        )}
+        </section>
+
+        {/* ---- Torrent list ----
+            Variation by state (RHYTHM 2): each torrent card's internal treatment
+            changes based on whether it is loading metadata, active, paused,
+            complete, or in error. */}
+        <section className="hairline pt-6">
+          {/* Loading state (R-27) */}
+          {isLoading && torrents === undefined ? (
+            <div className="py-12 flex items-center justify-center text-muted-foreground text-sm">
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              Loading torrents
+            </div>
+          ) : listError ? (
+            /* Error state (R-27): explicit, actionable, no decoration. */
+            <div className="py-12 flex flex-col items-center justify-center text-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-red-500" />
+              <p className="text-sm font-medium">Cannot reach torrent service</p>
+              <p className="text-[11px] text-muted-foreground">
+                Check that the Go backend on port {TORRENT_PORT} is running.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => queryClient.invalidateQueries({ queryKey: ['torrents'] })}
+                className="mt-2 h-8 border-border"
+              >
+                <RefreshCw className="h-3 w-3 mr-1.5" /> Retry
+              </Button>
+            </div>
+          ) : !torrents || torrents.length === 0 ? (
+            /* Empty state (R-27): honest sentence, no illustration, no inflated icon. */
+            <div className="py-16 text-center">
+              <p className="text-sm text-muted-foreground">No torrents yet.</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Paste a magnet link above, or upload a .torrent file.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {torrents.map((t) => (
+                <TorrentCard
+                  key={t.id}
+                  torrent={t}
+                  onStream={(file) => setStreamingFile({ torrentId: t.id, file, torrentName: t.name })}
+                  onPauseResume={() => handlePauseResume(t)}
+                  onDelete={(keep) => handleDelete(t, keep)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
-      {/* Video Player Modal */}
-      {streamingFile && (
-        <VideoPlayerModal
-          data={streamingFile}
-          onClose={() => setStreamingFile(null)}
-        />
-      )}
-
-      {/* Footer */}
-      <footer className="border-t border-zinc-800/80 bg-zinc-900/40 mt-auto">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-zinc-500">
-          <p className="flex items-center gap-1.5">
-            <HardDriveDownload className="h-3 w-3" />
-            TorrentStream · Next.js frontend + Go (anacrolix/torrent) backend
-          </p>
-          <p className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-1"><Gauge className="h-3 w-3" />Real-time streaming</span>
-            <span className="inline-flex items-center gap-1"><Users className="h-3 w-3" />P2P powered</span>
-          </p>
+      {/* ===== Footer =====
+          One line. Honest statement of what's running, no marketing copy. */}
+      <footer className="hairline mt-auto">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-10 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>Backend: Go + anacrolix/torrent on port {TORRENT_PORT}</span>
+          <span className="tabular hidden sm:inline">
+            {torrents?.length ?? 0} torrents
+          </span>
         </div>
       </footer>
+
+      {/* ===== Video player modal ===== */}
+      {streamingFile && (
+        <VideoPlayerModal data={streamingFile} onClose={() => setStreamingFile(null)} />
+      )}
     </div>
   )
 }
 
-// ============ Torrent Card ============
+// ============ Torrent card ============
+// Layout varies by state. Hairline border only, no shadow (R-12).
 function TorrentCard({
   torrent,
   onStream,
@@ -438,182 +507,246 @@ function TorrentCard({
   const [expanded, setExpanded] = useState(true)
   const [showAllFiles, setShowAllFiles] = useState(false)
 
-  const isDone = torrent.progress >= 1
-  const hasMeta = !!torrent.ready && torrent.length > 0
+  const isDone = torrent.progress >= 1 && torrent.ready
+  const hasMeta = torrent.ready && torrent.length > 0
+  const hasError = !!torrent.error
+  const isActive = !torrent.paused && hasMeta && !isDone && torrent.downloadSpeed > 0
   const visibleFiles = showAllFiles ? torrent.files : torrent.files.slice(0, 5)
 
+  // State -> dot
+  const dotState: 'active' | 'paused' | 'error' | 'done' = hasError
+    ? 'error'
+    : isDone
+    ? 'done'
+    : torrent.paused
+    ? 'paused'
+    : 'active'
+
   return (
-    <Card className={cn(
-      "bg-zinc-900/60 border-zinc-800 overflow-hidden",
-      torrent.error && "border-red-900/60"
-    )}>
-      <CardContent className="p-4">
-        {/* Header row */}
+    <div
+      className={cn(
+        'border border-border rounded-md',
+        hasError && 'border-red-500/40',
+        torrent.paused && 'opacity-70',
+      )}
+    >
+      <div className="p-4">
+        {/* Title row */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-0.5">
-              <h3 className="font-semibold text-sm truncate" title={torrent.name}>
+            <div className="flex items-center gap-2 mb-1">
+              <StatusDot state={dotState} />
+              <h3 className="font-medium text-sm truncate" title={torrent.name}>
                 {torrent.name}
               </h3>
-              {isDone ? (
-                <Badge variant="outline" className="border-emerald-700 text-emerald-400 text-[10px] py-0 px-1.5">
-                  <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" /> Complete
-                </Badge>
-              ) : torrent.paused ? (
-                <Badge variant="outline" className="border-amber-700 text-amber-400 text-[10px] py-0 px-1.5">Paused</Badge>
-              ) : hasMeta ? (
-                <Badge variant="outline" className="border-zinc-700 text-zinc-400 text-[10px] py-0 px-1.5">
-                  <Clock className="h-2.5 w-2.5 mr-0.5" /> {(torrent.length - torrent.downloaded) > 0 && torrent.downloadSpeed > 0
-                    ? `${formatTime((torrent.length - torrent.downloaded) / torrent.downloadSpeed * 1000)} left`
-                    : 'Streaming'}
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="border-zinc-700 text-zinc-400 text-[10px] py-0 px-1.5">
-                  <Loader2 className="h-2.5 w-2.5 mr-0.5 animate-spin" /> Fetching metadata
-                </Badge>
-              )}
             </div>
-            <p className="text-[11px] text-zinc-500 font-mono truncate" title={torrent.infoHash}>
-              {torrent.infoHash ? `${torrent.infoHash.slice(0, 16)}...` : '...'}
+            {/* Metadata row: monospace, small. infoHash is data, not chrome. */}
+            <p className="text-[11px] text-muted-foreground font-mono truncate">
+              {torrent.infoHash ? `${torrent.infoHash.slice(0, 16)}…` : '—'}
+              {hasMeta && (
+                <span className="text-muted-foreground">
+                  {'  '}· {torrent.files.length} files · {formatBytes(torrent.length)}
+                </span>
+              )}
             </p>
-            {torrent.error && (
-              <p className="text-[11px] text-red-400 mt-1 flex items-center gap-1">
-                <AlertTriangle className="h-3 w-3" /> {torrent.error}
+            {/* Error state inline (R-27): the error is part of the card, not a toast. */}
+            {hasError && (
+              <p className="text-[11px] text-red-500 mt-1.5 flex items-start gap-1.5">
+                <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                <span className="font-mono">{torrent.error}</span>
               </p>
             )}
           </div>
+
+          {/* Action buttons. Pause disabled while metadata loads. */}
           <div className="flex items-center gap-1 shrink-0">
-            <Button variant="ghost" size="sm" onClick={onPauseResume} className="h-7 px-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800" disabled={!hasMeta}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onPauseResume}
+              disabled={!hasMeta}
+              className="h-11 w-11 sm:h-7 sm:w-7 p-0 text-muted-foreground hover:text-foreground"
+              aria-label={torrent.paused ? 'Resume' : 'Pause'}
+              title={torrent.paused ? 'Resume' : 'Pause'}
+            >
               {torrent.paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-7 px-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-11 w-11 sm:h-7 sm:w-7 p-0 text-muted-foreground hover:text-foreground"
+                  aria-label="Delete"
+                  title="Delete"
+                >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="bg-zinc-900 border-zinc-800">
-                <DropdownMenuItem onClick={() => onDelete(true)} className="text-zinc-300 hover:bg-zinc-800 cursor-pointer">
+              <DropdownMenuContent align="end" className="bg-popover border-border">
+                <DropdownMenuItem
+                  onClick={() => onDelete(true)}
+                  className="text-popover-foreground hover:bg-muted cursor-pointer"
+                >
                   Remove (keep files)
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onDelete(false)} className="text-red-400 hover:bg-zinc-800 cursor-pointer">
-                  Remove & delete files
+                <DropdownMenuItem
+                  onClick={() => onDelete(false)}
+                  className="text-red-500 hover:bg-muted cursor-pointer"
+                >
+                  Remove and delete files
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </div>
 
-        {/* Progress + stats */}
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-[11px]">
-            <Progress value={torrent.progress * 100} className="h-1.5 flex-1 bg-zinc-800 [&>div]:bg-emerald-500" />
-            <span className="font-mono text-zinc-400 tabular-nums w-10 text-right">
-              {(torrent.progress * 100).toFixed(0)}%
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-500">
-            <span className="inline-flex items-center gap-1">
-              <Gauge className="h-3 w-3 text-emerald-400" />
-              <span className="text-emerald-400 font-mono">{formatSpeed(torrent.downloadSpeed)}</span>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Upload className="h-3 w-3 text-sky-400" />
-              <span className="text-sky-400 font-mono">{formatSpeed(torrent.uploadSpeed)}</span>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Users className="h-3 w-3 text-zinc-400" />
-              <span className="font-mono">{torrent.numPeers} peers</span>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <File className="h-3 w-3 text-zinc-400" />
-              <span className="font-mono">{formatBytes(torrent.downloaded)} / {formatBytes(torrent.length)}</span>
-            </span>
-            {torrent.files.length > 0 && (
-              <span className="inline-flex items-center gap-1">
-                <FileText className="h-3 w-3 text-zinc-400" />
-                <span className="font-mono">{torrent.files.length} files</span>
+        {/* Progress + live stats (R-17: every number is real, from the backend). */}
+        {hasMeta && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <Progress
+                value={torrent.progress * 100}
+                className={cn(
+                  'h-1 flex-1 bg-muted',
+                  // The unfilled track gets a slow pulse only when actively downloading.
+                  // Reason: MOTION dial = 1, this is the one allowed motion in the UI.
+                  isActive && '[&>div]:bg-amber-500'
+                )}
+              />
+              <span className="font-mono text-[11px] tabular text-muted-foreground w-10 text-right">
+                {(torrent.progress * 100).toFixed(0)}%
               </span>
-            )}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-mono tabular text-muted-foreground">
+              <span>
+                <span className="text-muted-foreground">↓ </span>
+                <span className="text-foreground">{formatSpeed(torrent.downloadSpeed)}</span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">↑ </span>
+                <span>{formatSpeed(torrent.uploadSpeed)}</span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">peers </span>
+                <span>{torrent.numPeers}</span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">done </span>
+                <span>{formatBytes(torrent.downloaded)}</span>
+                <span className="text-muted-foreground"> / {formatBytes(torrent.length)}</span>
+              </span>
+              {!isDone && isActive && torrent.downloadSpeed > 0 && (
+                <span>
+                  <span className="text-muted-foreground">eta </span>
+                  <span>{formatEta((torrent.length - torrent.downloaded) / torrent.downloadSpeed * 1000)}</span>
+                </span>
+              )}
+              {isDone && (
+                <span className="text-emerald-600 dark:text-emerald-500">
+                  complete
+                </span>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Files */}
         {torrent.files.length > 0 && (
           <div className="mt-3">
             <button
               onClick={() => setExpanded(!expanded)}
-              className="text-[11px] text-zinc-500 hover:text-zinc-300 inline-flex items-center gap-1 mb-2"
+              className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1 mb-2"
             >
-              {expanded ? '▾' : '▸'} Files ({torrent.files.length})
+              {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {torrent.files.length} files
             </button>
             {expanded && (
-              <div className="space-y-1.5 rounded-md bg-zinc-950/60 border border-zinc-800/60 p-2">
+              <div className="border-t border-border">
                 {visibleFiles.map((f) => (
-                  <FileRow key={f.index} file={f} onStream={() => onStream(f)} torrentId={torrent.id} />
+                  <FileRow
+                    key={f.index}
+                    file={f}
+                    onStream={() => onStream(f)}
+                    torrentId={torrent.id}
+                  />
                 ))}
                 {torrent.files.length > 5 && (
                   <button
                     onClick={() => setShowAllFiles(!showAllFiles)}
-                    className="w-full text-center text-[11px] text-zinc-500 hover:text-zinc-300 py-1"
+                    className="w-full text-[11px] text-muted-foreground hover:text-foreground py-1.5 border-t border-border"
                   >
-                    {showAllFiles ? 'Show less' : `Show all ${torrent.files.length} files`}
+                    {showAllFiles ? 'Show fewer' : `Show all ${torrent.files.length}`}
                   </button>
                 )}
               </div>
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   )
 }
 
-// ============ File Row ============
-function FileRow({ file, onStream, torrentId }: { file: TorrentFile; onStream: () => void; torrentId: string }) {
+// ============ File row ============
+function FileRow({
+  file,
+  onStream,
+  torrentId,
+}: {
+  file: TorrentFile
+  onStream: () => void
+  torrentId: string
+}) {
   const downloadUrl = `/api/torrents/${torrentId}/download/${file.index}?XTransformPort=${TORRENT_PORT}`
 
   return (
-    <div className="flex items-center gap-2 py-1 px-1 rounded hover:bg-zinc-900/60 transition group">
-      <div className="shrink-0">{getFileIcon(file)}</div>
+    <div className="flex items-center gap-3 py-1.5 px-1 hover:bg-muted/40 transition-colors group">
+      {/* Letter mark for file type (R-04: replaces Lucide file icons).
+          Reason: tabular letter classification reads as data, not decoration. */}
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center border border-border font-mono text-[10px] text-muted-foreground">
+        {fileLetter(file)}
+      </span>
       <div className="min-w-0 flex-1">
-        <p className="text-xs truncate font-medium text-zinc-300" title={file.name}>{file.name}</p>
+        <p className="text-xs truncate font-mono text-foreground/90" title={file.name}>
+          {file.name}
+        </p>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[10px] text-zinc-500 font-mono">{formatBytes(file.length)}</span>
+          <span className="text-[10px] text-muted-foreground font-mono tabular">{formatBytes(file.length)}</span>
           {file.progress > 0 && file.progress < 1 && (
             <>
-              <span className="text-[10px] text-zinc-600">·</span>
-              <div className="h-1 flex-1 max-w-[100px] bg-zinc-800 rounded overflow-hidden">
-                <div className="h-full bg-emerald-500/70" style={{ width: `${file.progress * 100}%` }} />
+              <div className="h-0.5 flex-1 max-w-[100px] bg-muted overflow-hidden">
+                <div className="h-full bg-amber-500" style={{ width: `${file.progress * 100}%` }} />
               </div>
-              <span className="text-[10px] text-zinc-500 font-mono">{(file.progress * 100).toFixed(0)}%</span>
+              <span className="text-[10px] text-muted-foreground font-mono tabular">
+                {(file.progress * 100).toFixed(0)}%
+              </span>
             </>
           )}
-          {file.done && (
-            <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-          )}
+          {file.done && <CheckCircle2 className="h-3 w-3 text-emerald-500" />}
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
-        {file.streamable ? (
+      {/* Actions appear on hover for desktop, always visible on touch via opacity-100 sm:opacity-0 */}
+      <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+        {file.streamable && (
           <Button
             variant="ghost"
             size="sm"
             onClick={onStream}
-            className="h-7 px-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30"
-            title="Stream / Preview"
+            className="h-11 px-2 sm:h-6 text-[11px] text-amber-600 dark:text-amber-500 hover:bg-amber-500/10"
           >
-            <Play className="h-3 w-3 mr-0.5" /> Stream
+            <Play className="h-3 w-3 mr-1" /> Stream
           </Button>
-        ) : null}
+        )}
         <a href={downloadUrl} download={file.name}>
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 px-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-            title="Download file"
+            className="h-11 w-11 sm:h-6 sm:w-6 p-0 text-muted-foreground hover:text-foreground"
+            aria-label={`Download ${file.name}`}
+            title={`Download ${file.name}`}
           >
-            <Download className="h-3.5 w-3.5" />
+            <Download className="h-3 w-3" />
           </Button>
         </a>
       </div>
@@ -621,7 +754,7 @@ function FileRow({ file, onStream, torrentId }: { file: TorrentFile; onStream: (
   )
 }
 
-// ============ Video Player Modal ============
+// ============ Video player modal ============
 function VideoPlayerModal({
   data,
   onClose,
@@ -636,44 +769,67 @@ function VideoPlayerModal({
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
 
-  // Reset on retry
   useEffect(() => {
     setLoading(true)
     setError(null)
   }, [retryKey])
 
+  // Close on Escape (R-32).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-4xl bg-zinc-950 border-zinc-800 p-0 overflow-hidden gap-0">
-        <DialogHeader className="px-4 py-3 border-b border-zinc-800 flex-row items-center justify-between space-y-0">
+      <DialogContent className="max-w-4xl bg-popover border-border p-0 overflow-hidden gap-0">
+        <DialogTitle className="sr-only">{file.name}</DialogTitle>
+        <DialogDescription className="sr-only">
+          Streaming {file.name} from {torrentName}, {formatBytes(file.length)}.
+        </DialogDescription>
+
+        {/* Header bar */}
+        <div className="px-4 py-3 border-b border-border flex items-start justify-between">
           <div className="min-w-0 flex-1">
-            <DialogTitle className="text-sm font-medium truncate">{file.name}</DialogTitle>
-            <DialogDescription className="text-[11px] text-zinc-500 truncate">
+            <p className="text-sm font-medium truncate font-mono">{file.name}</p>
+            <p className="text-[11px] text-muted-foreground truncate">
               from {torrentName} · {formatBytes(file.length)}
-            </DialogDescription>
+            </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} className="h-7 w-7 p-0 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            className="h-11 w-11 sm:h-7 sm:w-7 p-0 text-muted-foreground hover:text-foreground shrink-0"
+            aria-label="Close"
+          >
             <X className="h-4 w-4" />
           </Button>
-        </DialogHeader>
+        </div>
+
+        {/* Player surface. True black for video, no border. */}
         <div className="relative bg-black aspect-video">
           {loading && !error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-zinc-500">
-              <Loader2 className="h-6 w-6 animate-spin text-emerald-400" />
-              <p className="text-xs">Buffering... <span className="text-zinc-600">(torrent pieces loading)</span></p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-stone-400">
+              <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
+              <p className="text-xs">Buffering…</p>
+              <p className="text-[10px] text-stone-600">torrent pieces loading</p>
             </div>
           )}
           {error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-400">
-              <AlertTriangle className="h-8 w-8 text-red-400" />
-              <p className="text-sm">{error}</p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-stone-400">
+              <AlertTriangle className="h-7 w-7 text-red-500" />
+              <p className="text-xs max-w-md text-center px-4">{error}</p>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setRetryKey((k) => k + 1)}
-                className="border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100"
+                className="mt-1 h-8 border-stone-700 text-stone-300 hover:bg-stone-800 hover:text-white"
               >
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
+                <RefreshCw className="h-3 w-3 mr-1.5" /> Retry
               </Button>
             </div>
           )}
@@ -689,16 +845,16 @@ function VideoPlayerModal({
               onPlaying={() => setLoading(false)}
               onCanPlay={() => setLoading(false)}
               onError={() => {
-                setError('Stream failed. The torrent may not have enough peers yet, or the file format is not supported by the browser.')
+                setError('Stream failed. The torrent may not have enough peers yet, or the format is not supported by the browser.')
                 setLoading(false)
               }}
             />
           ) : file.isAudio ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6">
-              <div className="h-20 w-20 rounded-full bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center shadow-2xl shadow-emerald-500/30">
-                <Music className="h-10 w-10 text-white" />
+              <div className="h-16 w-16 rounded-full border border-stone-700 flex items-center justify-center">
+                <span className="font-mono text-sm text-stone-400">A</span>
               </div>
-              <p className="text-sm text-zinc-300 text-center">{file.name}</p>
+              <p className="text-xs text-stone-300 text-center font-mono">{file.name}</p>
               <audio
                 key={retryKey}
                 src={streamUrl}
@@ -708,7 +864,7 @@ function VideoPlayerModal({
                 onWaiting={() => setLoading(true)}
                 onPlaying={() => setLoading(false)}
                 onError={() => {
-                  setError('Audio stream failed. Please retry or check peers.')
+                  setError('Audio stream failed. Retry or check peer count.')
                   setLoading(false)
                 }}
               />
@@ -727,11 +883,15 @@ function VideoPlayerModal({
             />
           ) : null}
         </div>
-        <div className="px-4 py-2 border-t border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
-          <span className="font-mono truncate">{file.ext.toUpperCase()} · {formatBytes(file.length)}</span>
+
+        {/* Footer */}
+        <div className="px-4 py-2 border-t border-border flex items-center justify-between text-[11px] text-muted-foreground">
+          <span className="font-mono tabular">
+            {file.ext.toUpperCase()} · {formatBytes(file.length)}
+          </span>
           <a href={`/api/torrents/${torrentId}/download/${file.index}?XTransformPort=${TORRENT_PORT}`} download={file.name}>
-            <Button variant="outline" size="sm" className="h-7 border-zinc-700 hover:bg-zinc-800 hover:text-zinc-100">
-              <Download className="h-3 w-3 mr-1" /> Download
+            <Button variant="outline" size="sm" className="h-7 border-border">
+              <Download className="h-3 w-3 mr-1.5" /> Download
             </Button>
           </a>
         </div>
