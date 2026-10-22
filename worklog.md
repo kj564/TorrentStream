@@ -88,3 +88,56 @@ Stage Summary:
 - Artifacts: `DESIGN.md` (art direction), `antislop-gate-report.md` (formal PASS/FAIL report), updated `src/app/globals.css` (warm stone palette + focus ring), updated `src/app/layout.tsx` (next-themes), updated `src/components/providers.tsx` (ThemeProvider), rewritten `src/app/page.tsx` (~900 lines, antislop-compliant).
 - Visual identity: warm-stone dark + amber accent + Geist Mono for all data + hairline rules + 6px status dots + letter marks for file types. Single accent color, single typeface pair, single motion (pulse on active state only).
 - All Hard Gate rules pass. All Purpose-Gate techniques either avoided or have written reasons. Liveliness dials set and consistent. Three VLM audits: all PASS.
+
+---
+Task ID: plyr-integration
+Agent: main (Z.ai Code)
+Task: Replace the native HTML5 video/audio controls with Plyr (https://github.com/sampotts/plyr) in the torrent stream player.
+
+Work Log:
+- Installed `plyr@3.8.5` via `bun add plyr`. Confirmed package ships ESM at `dist/plyr.mjs`, types at `src/js/plyr.d.ts`, and CSS at `dist/plyr.css`.
+- Inspected Plyr's CSS variables (`grep --plyr-` on `plyr.css`) to find all themeable knobs: `--plyr-color-main`, `--plyr-video-background`, `--plyr-video-control-color`, `--plyr-menu-background`, `--plyr-range-fill-background`, `--plyr-range-thumb-background`, `--plyr-tooltip-background`, `--plyr-badge-*`, `--plyr-captions-*`, `--plyr-font-family`, etc.
+- Added Plyr CSS theming to `src/app/globals.css` under a dedicated section. All variables reference our existing palette tokens so the player inherits the instrument-panel aesthetic from DESIGN.md:
+  - `--plyr-color-main: var(--accent)` (our amber `oklch(0.75 0.16 70)`)
+  - `--plyr-video-background: #000` (true black video surface, reads as a screen not a panel)
+  - `--plyr-video-controls-background: oklch(0.13 0.005 75 / 0.85)` (warm dark with alpha)
+  - `--plyr-menu-background`, `--plyr-tooltip-background`: warm stone popover color
+  - `--plyr-range-fill-background: var(--accent)` (amber progress fill)
+  - `--plyr-range-thumb-background: #fff` with amber inset shadow
+  - `--plyr-font-family: var(--font-geist-sans)` (matches body typeface)
+  - `.plyr__time` rule forces `font-variant-numeric: tabular-nums` + Geist Mono (matches the rest of the UI's data treatment per DESIGN.md)
+  - `.plyr` + `.plyr video` + `.plyr__video-wrapper` set to `w-full h-full object-contain` so Plyr fills the modal's aspect-video container
+  - `.plyr--audio` overrides: transparent controls background, hidden overlay play button (we render our own letter-mark "A" for audio)
+- Created a `PlyrPlayer` React component in `src/app/page.tsx`:
+  - Props: `source`, `mediaType` ('video' | 'audio'), `onWaiting`, `onPlaying`, `onCanPlay`, `onError`
+  - Uses `useRef` for the underlying `<video>` / `<audio>` element and the Plyr instance
+  - Uses a `cbRef` to hold the latest callbacks without triggering Plyr re-init on every parent render
+  - `useEffect` with empty deps initializes Plyr once on mount, destroys on unmount
+  - Listens to native media events on the underlying element (Plyr doesn't intercept them) so loading/error states propagate to parent
+  - Retry mechanism: parent passes `key={retryKey}` so React remounts the component, re-running the init effect
+  - Control list: `['play-large','play','progress','current-time','duration','mute','volume','settings','pip','fullscreen']` for video; subset for audio (no pip/fullscreen, no play-large since we render our own letter mark)
+  - Settings: `['speed']` only (no quality since stream is single-quality)
+  - `autoplay: true`, `hideControls: true`, `keyboard: { focused: true, global: false }`, `tooltips: { controls: false, seek: true }`, `seekTime: 10`
+- Hit SSR error: `ReferenceError: document is not defined` at `import Plyr from 'plyr'`. Plyr's source references `document` at module evaluation, which breaks Next.js SSR even for client components (Next.js still SSRs client components for the initial HTML).
+- Fix: replaced the top-level `import Plyr from 'plyr'` with:
+  - `import 'plyr/dist/plyr.css'` (CSS import is safe at module level)
+  - `import type Plyr from 'plyr'` (type-only import, erased at compile time, no module eval)
+  - Runtime `import('plyr')` inside `useEffect` (dynamic import only runs in browser)
+- Replaced the inline `<video controls>` and `<audio controls>` in `VideoPlayerModal` with `<PlyrPlayer>` instances. Removed the now-unused `videoRef`. Image case unchanged (Plyr doesn't handle images).
+- Verification:
+  - Compile: ✓ (Next.js dev compiles cleanly, no SSR errors)
+  - Plyr CSS loaded: ✓ (`document.styleSheets` contains a sheet with `plyr` rules)
+  - Page renders: ✓ (TorrentStream title, no console errors, all UI elements visible)
+  - Plyr DOM render: ✓ (added temporary test trigger via `window.__openTestPlayer` to bypass torrent peer connectivity limitation in sandbox). After triggering, browser DOM showed: `.plyr` element, `.plyr__controls` bar, `.plyr video` wrapper, `.plyr__control--overlaid` (large play button) all present.
+  - Theme vars applied: ✓ (computed `--plyr-color-main` = `lab(70.64% 26.21 73.05)` which is our amber `oklch(0.75 0.16 70)` converted; `--plyr-range-fill-background` matches)
+  - VLM audit: ✓ ("It is a custom HTML5 player (likely Plyr or similar), not default browser controls. The progress bar and volume slider accent color is amber/orange. Yes, the controls (play, progress, time, volume, settings, and fullscreen) are all visible at the bottom. Yes, the styling matches a warm/amber theme, consistent with the app's overall design.")
+- Removed all temporary test code (openTestPlayer callback, window exposure, test stream URL fallback) after verification.
+
+Stage Summary:
+- Plyr integrated as the video/audio player for the torrent stream modal, replacing native browser controls.
+- Custom Plyr theme matches our instrument-panel palette: amber accent for progress/focus/toggle, warm-stone chrome for controls/menus/tooltips, Geist Mono for tabular time readouts.
+- SSR-safe via dynamic import inside useEffect (Plyr's module-eval reference to `document` no longer breaks server-side rendering).
+- Retry mechanism preserved via React `key={retryKey}` remount pattern.
+- Verified end-to-end via Agent Browser + VLM: Plyr initializes, renders custom controls, applies amber theme, all controls (play/progress/time/volume/settings/pip/fullscreen) visible.
+- Artifacts: `src/app/globals.css` (Plyr theme section), `src/app/page.tsx` (PlyrPlayer component + VideoPlayerModal integration).
+- Sandbox limitation noted: end-to-end torrent stream playback depends on peer connectivity which the sandbox network doesn't reliably support (UDP trackers timeout, metadata exchange fails). The Plyr integration was verified using a public sample video via a temporary test trigger that has since been removed.

@@ -158,3 +158,95 @@
 @utility hairline {
   border-top: 1px solid var(--border);
 }
+
+/* ============================================================
+ * Plyr video player theming
+ * Integrates Plyr's controls with our instrument-panel palette:
+ * amber accent for progress/focus, warm-stone neutrals for chrome,
+ * Geist Mono for time readouts (matches the tabular data treatment
+ * elsewhere in the UI). See DESIGN.md.
+ * ============================================================ */
+:root {
+  /* Main accent = our amber, used for progress fill, focus, toggle states */
+  --plyr-color-main: var(--accent);
+  --plyr-focus-visible-color: var(--accent);
+
+  /* Video surface stays true black so the player surface reads as a screen,
+     not a panel. */
+  --plyr-video-background: #000;
+  --plyr-video-control-color: #fafaf9;
+  --plyr-video-control-color-hover: #fff;
+  --plyr-video-control-background-hover: rgba(255, 255, 255, 0.1);
+  --plyr-video-controls-background: oklch(0.13 0.005 75 / 0.85);
+  --plyr-video-progress-buffered-background: rgba(255, 255, 255, 0.25);
+  --plyr-video-range-track-background: rgba(255, 255, 255, 0.2);
+
+  /* Menu (settings popup) uses warm dark */
+  --plyr-menu-background: oklch(0.16 0.006 75 / 0.96);
+  --plyr-menu-color: oklch(0.95 0.005 75);
+  --plyr-menu-arrow-color: oklch(0.16 0.006 75);
+
+  /* Tooltip (seek preview) */
+  --plyr-tooltip-background: oklch(0.16 0.006 75 / 0.96);
+  --plyr-tooltip-color: oklch(0.95 0.005 75);
+
+  /* Range sliders: amber fill, white thumb */
+  --plyr-range-fill-background: var(--accent);
+  --plyr-range-thumb-background: #fff;
+  --plyr-range-thumb-shadow: 0 1px 1px rgba(0, 0, 0, 0.15) 0 0 0 3px var(--accent) inset;
+  --plyr-progress-loading-background: rgba(245, 158, 11, 0.6);
+
+  /* Badge (quality badge etc.) */
+  --plyr-badge-background: var(--accent);
+  --plyr-badge-text-color: oklch(0.18 0.008 75);
+  --plyr-badge-border-radius: 2px;
+
+  /* Captions */
+  --plyr-captions-background: rgba(0, 0, 0, 0.8);
+  --plyr-captions-text-color: #fff;
+
+  /* Typography: Geist Sans for UI, falls back to project var */
+  --plyr-font-family: var(--font-geist-sans), system-ui, sans-serif;
+  --plyr-font-size-base: 13px;
+  --plyr-font-size-time: 12px;
+  --plyr-control-radius: 3px;
+  --plyr-menu-radius: 4px;
+  --plyr-tooltip-radius: 3px;
+}
+
+.dark {
+  /* Dark mode: same values work since the player surface is always dark.
+     Override menu background to match our darker stone-950 popover. */
+  --plyr-menu-background: oklch(0.16 0.006 75 / 0.96);
+  --plyr-tooltip-background: oklch(0.16 0.006 75 / 0.96);
+}
+
+/* Audio player: hide the big play button since we render our own letter mark.
+   Audio controls sit inline, not on a video surface. */
+.plyr--audio .plyr__controls {
+  background: transparent;
+  padding: 8px 4px 4px;
+}
+.plyr--audio .plyr__control--overlay {
+  display: none;
+}
+
+/* Make Plyr fill its container. The parent sets aspect-ratio. */
+.plyr {
+  width: 100%;
+  height: 100%;
+}
+.plyr video,
+.plyr__video-wrapper {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Tabular figures for time readouts. Matches the rest of the UI's
+   data treatment (DESIGN.md: monospace for all data). */
+.plyr__time {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-geist-mono), var(--plyr-font-family);
+}
+

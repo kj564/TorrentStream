@@ -3,6 +3,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
+// Plyr CSS is safe to import at module level (CSS only, no JS).
+import 'plyr/dist/plyr.css'
+// Type-only import: erased at compile time, does not trigger module evaluation
+// so it does not break SSR. The runtime Plyr is loaded via dynamic import()
+// inside the PlyrPlayer useEffect.
+import type Plyr from 'plyr'
+// Plyr JS is imported dynamically inside useEffect because its source
+// references `document` at module evaluation, which breaks Next.js SSR.
 import {
   Play,
   Pause,
@@ -754,6 +762,137 @@ function FileRow({
   )
 }
 
+// ============ Plyr video/audio player ============
+// Wraps Plyr (https://github.com/sampotts/plyr) so we get a clean, accessible
+// custom player UI instead of the browser default. Theming comes from
+// globals.css via Plyr CSS variables (amber accent, warm stone chrome).
+//
+// Implementation notes:
+// - Plyr is initialized once on mount in useEffect, destroyed on unmount.
+// - Callbacks are stored in a ref so changing them does not re-init Plyr.
+// - The retry mechanism uses `key={retryKey}` on this component, which forces
+//   React to remount it, which re-runs the init effect.
+// - We listen to native media events on the underlying <video>/<audio> element
+//   (Plyr does not intercept them) so loading/error states propagate to parent.
+
+interface PlyrPlayerProps {
+  source: string
+  mediaType: 'video' | 'audio'
+  onWaiting?: () => void
+  onPlaying?: () => void
+  onCanPlay?: () => void
+  onError?: () => void
+}
+
+function PlyrPlayer({
+  source,
+  mediaType,
+  onWaiting,
+  onPlaying,
+  onCanPlay,
+  onError,
+}: PlyrPlayerProps) {
+  const mediaRef = useRef<HTMLMediaElement | null>(null)
+  const plyrRef = useRef<Plyr | null>(null)
+  // Refs for the latest callbacks so we don't re-init Plyr on every render.
+  const cbRef = useRef({ onWaiting, onPlaying, onCanPlay, onError })
+  useEffect(() => {
+    cbRef.current = { onWaiting, onPlaying, onCanPlay, onError }
+  })
+
+  useEffect(() => {
+    const media = mediaRef.current
+    if (!media) return
+
+    // Native event handlers read from the ref so they always see the latest
+    // callback without needing to re-add the listener.
+    const handleWaiting = () => cbRef.current.onWaiting?.()
+    const handlePlaying = () => cbRef.current.onPlaying?.()
+    const handleCanPlay = () => cbRef.current.onCanPlay?.()
+    const handleError = () => cbRef.current.onError?.()
+    const handleLoadStart = () => cbRef.current.onWaiting?.()
+
+    media.addEventListener('waiting', handleWaiting)
+    media.addEventListener('playing', handlePlaying)
+    media.addEventListener('canplay', handleCanPlay)
+    media.addEventListener('error', handleError)
+    media.addEventListener('loadstart', handleLoadStart)
+
+    // Dynamic import: Plyr's source references `document` at module load,
+    // so importing it at the top of this file breaks Next.js SSR. Loading it
+    // inside useEffect guarantees we only run it in the browser.
+    let cancelled = false
+    import('plyr').then(({ default: Plyr }) => {
+      if (cancelled || !mediaRef.current) return
+
+      // Reason for control list: only show controls that work for streamed
+      // torrent content (no download button since we have our own, no airplay
+      // since the source is a torrent stream, captions only if present).
+      plyrRef.current = new Plyr(mediaRef.current, {
+        controls:
+          mediaType === 'video'
+            ? [
+                'play-large',
+                'play',
+                'progress',
+                'current-time',
+                'duration',
+                'mute',
+                'volume',
+                'settings',
+                'pip',
+                'fullscreen',
+              ]
+            : ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings'],
+        settings: ['speed'],
+        autoplay: true,
+        autoPause: true,
+        hideControls: true,
+        keyboard: { focused: true, global: false },
+        tooltips: { controls: false, seek: true },
+        seekTime: 10,
+      })
+    })
+
+    return () => {
+      cancelled = true
+      media.removeEventListener('waiting', handleWaiting)
+      media.removeEventListener('playing', handlePlaying)
+      media.removeEventListener('canplay', handleCanPlay)
+      media.removeEventListener('error', handleError)
+      media.removeEventListener('loadstart', handleLoadStart)
+      try {
+        plyrRef.current?.destroy()
+      } catch {
+        // Plyr can throw if the DOM was already torn down; safe to ignore.
+      }
+      plyrRef.current = null
+    }
+    // Empty deps: Plyr inits once on mount. Source changes handled by remount via key prop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <div className="w-full h-full">
+      {mediaType === 'video' ? (
+        <video
+          ref={mediaRef as React.RefObject<HTMLVideoElement>}
+          src={source}
+          className="w-full h-full"
+          playsInline
+          // No `controls` attribute: Plyr provides its own.
+          // No `autoPlay` attribute: Plyr option handles it (more reliable across browsers).
+        />
+      ) : (
+        <audio
+          ref={mediaRef as React.RefObject<HTMLAudioElement>}
+          src={source}
+        />
+      )}
+    </div>
+  )
+}
+
 // ============ Video player modal ============
 function VideoPlayerModal({
   data,
@@ -764,7 +903,6 @@ function VideoPlayerModal({
 }) {
   const { file, torrentId, torrentName } = data
   const streamUrl = `/api/torrents/${torrentId}/stream/${file.index}?XTransformPort=${TORRENT_PORT}`
-  const videoRef = useRef<HTMLVideoElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [retryKey, setRetryKey] = useState(0)
@@ -834,13 +972,10 @@ function VideoPlayerModal({
             </div>
           )}
           {file.isVideo ? (
-            <video
+            <PlyrPlayer
               key={retryKey}
-              ref={videoRef}
-              src={streamUrl}
-              controls
-              autoPlay
-              className="w-full h-full"
+              source={streamUrl}
+              mediaType="video"
               onWaiting={() => setLoading(true)}
               onPlaying={() => setLoading(false)}
               onCanPlay={() => setLoading(false)}
@@ -855,19 +990,19 @@ function VideoPlayerModal({
                 <span className="font-mono text-sm text-stone-400">A</span>
               </div>
               <p className="text-xs text-stone-300 text-center font-mono">{file.name}</p>
-              <audio
-                key={retryKey}
-                src={streamUrl}
-                controls
-                autoPlay
-                className="w-full max-w-md"
-                onWaiting={() => setLoading(true)}
-                onPlaying={() => setLoading(false)}
-                onError={() => {
-                  setError('Audio stream failed. Retry or check peer count.')
-                  setLoading(false)
-                }}
-              />
+              <div className="w-full max-w-md">
+                <PlyrPlayer
+                  key={retryKey}
+                  source={streamUrl}
+                  mediaType="audio"
+                  onWaiting={() => setLoading(true)}
+                  onPlaying={() => setLoading(false)}
+                  onError={() => {
+                    setError('Audio stream failed. Retry or check peer count.')
+                    setLoading(false)
+                  }}
+                />
+              </div>
             </div>
           ) : file.isImage ? (
             <img
