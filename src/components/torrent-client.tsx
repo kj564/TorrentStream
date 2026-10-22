@@ -96,8 +96,15 @@ function loadWebTorrent(): Promise<any> {
     if (typeof window === 'undefined') {
       throw new Error('window not available')
     }
-    // Cache-bust with a query so dev server changes are picked up.
-    const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ '/webtorrent.min.js')
+    // Build the URL relative to the current page so the basePath (e.g.
+    // /TorrentStream on GitHub Pages) is respected. Using new URL() with
+    // window.location.href as the base handles both production (subpath)
+    // and local dev (root) correctly.
+    const url = new URL('webtorrent.min.js', window.location.href).href
+    // The import() argument is a runtime variable, so the bundler cannot
+    // statically resolve it. This keeps the native Node deps in the
+    // webtorrent npm package out of the SSR build.
+    const mod = await import(/* @vite-ignore */ url as any)
     const WT = mod.default || mod.WebTorrent || mod
     if (!WT) throw new Error('WebTorrent constructor not found in module')
     return WT
