@@ -128,10 +128,10 @@ export function TorrentClientProvider({ children }: { children: ReactNode }) {
     loadWebTorrent()
       .then((WT) => {
         if (cancelled) return
-        const c = new WT({
-          tracker: { wrtc: true },
-          dht: false,
-        })
+        // Browser defaults: native RTCPeerConnection is used automatically.
+        // The browser bundle detects WebRTC support and uses the browser's
+        // native implementation. No `tracker: { wrtc: true }` needed.
+        const c = new WT({})
         setClient(c)
         console.log('[webtorrent] client ready')
       })
@@ -221,10 +221,15 @@ export function TorrentClientProvider({ children }: { children: ReactNode }) {
       const createdAt = Date.now()
 
       // Always append WebRTC trackers so browser peer discovery works even
-      // for magnets that only list UDP trackers.
+      // for magnets that only list UDP trackers. These are the public
+      // WebTorrent trackers that bridge WebRTC peers. More trackers = more
+      // chance of finding peers.
       const extraTrackers = [
         'wss://tracker.btorrent.xyz',
         'wss://tracker.openwebtorrent.com',
+        'wss://tracker.webtorrent.io',
+        'wss://tracker.files.fm:7073/announce',
+        'wss://tracker.btsync.app',
       ]
 
       try {

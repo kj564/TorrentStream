@@ -427,6 +427,15 @@ function TorrentCard({
 }) {
   const [expanded, setExpanded] = useState(true)
   const [showAllFiles, setShowAllFiles] = useState(false)
+  // Track whether the peer search has stalled (15s without metadata).
+  // Uses a re-render trigger since we need to compare createdAt against now.
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (torrent.ready || torrent.error) return
+    const interval = setInterval(() => setTick((t) => t + 1), 5000)
+    return () => clearInterval(interval)
+  }, [torrent.ready, torrent.error])
+  const peerSearchStalled = !torrent.ready && !torrent.error && Date.now() - torrent.createdAt > 15000
 
   const isDone = torrent.progress >= 1 && torrent.ready
   const hasMeta = torrent.ready && torrent.length > 0
@@ -472,6 +481,20 @@ function TorrentCard({
               <p className="text-[11px] text-red-500 mt-1.5 flex items-start gap-1.5">
                 <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
                 <span className="font-mono">{torrent.error}</span>
+              </p>
+            )}
+            {/* Peer search hint: show after 15s if metadata still not received.
+                Helps users understand that browser WebTorrent needs WebRTC peers. */}
+            {!hasMeta && !hasError && peerSearchStalled && (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Searching for WebRTC peers. Browser torrents only connect to peers
+                that support WebRTC. If this takes too long, the torrent may not
+                have browser-compatible peers.
+              </p>
+            )}
+            {!hasMeta && !hasError && !peerSearchStalled && (
+              <p className="text-[11px] text-muted-foreground/60 mt-1.5">
+                Connecting to trackers…
               </p>
             )}
           </div>
